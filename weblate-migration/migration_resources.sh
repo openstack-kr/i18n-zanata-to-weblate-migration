@@ -29,8 +29,8 @@ source $SCRIPTSDIR/01-setup-env/setup.sh
 source $SCRIPTSDIR/02-prepare-translations/get_zanata_xml.sh
 source $SCRIPTSDIR/02-prepare-translations/get_translations.sh
 source $SCRIPTSDIR/03-prepare-component-name/get_project_component_name.sh
-source $SCRIPTSDIR/prepare_weblate_components/create_weblate_components.sh
-source $SCRIPTSDIR/test_accuracy/test.sh
+source $SCRIPTSDIR/04-prepare-weblate-components/create_weblate_components.sh
+source $SCRIPTSDIR/05-test-accuracy/test.sh
 source $SCRIPTSDIR/common/pretty-printer.sh
 
 # We need a UTF-8 locale, set it properly in case it's not set.
