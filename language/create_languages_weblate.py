@@ -37,8 +37,8 @@ from typing import Dict
 from typing import Optional
 from typing import Tuple
 
-from weblate.weblate_utils import IniConfig
-from weblate.weblate_utils import WeblateRestService
+from weblate_utils import IniConfig
+from weblate_utils import WeblateRestService
 
 
 def normalize_code(code: str) -> str:

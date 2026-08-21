@@ -20,8 +20,8 @@ import json
 import requests
 from typing import Dict
 from typing import List
-from weblate.weblate_utils import IniConfig
-from weblate.weblate_utils import WeblateRestService
+from weblate_utils import IniConfig
+from weblate_utils import WeblateRestService
 
 
 class WeblateLanguageDeleter:
