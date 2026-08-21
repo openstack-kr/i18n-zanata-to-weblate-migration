@@ -1,0 +1,1907 @@
+# Copyright (c) 2015 Hewlett-Packard Development Company, L.P.
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
+
+import argparse
+from collections import defaultdict
+import fcntl
+import io
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+import traceback
+from typing import Callable
+from urllib.parse import urljoin
+import zipfile
+import polib
+import requests
+
+
+def sanitize_locale(locale: str) -> str:
+    """Sanitize locale for standardization
+
+    :param locale: string locale to sanitize
+    :returns: string sanitized locale
+    """
+    # Some translations are set to invalid locale format in weblate.
+    # so we need to convert them. ex) zh_Hans, zh_Hant, etc.
+    if locale == "zh_Hans":
+        locale = "zh_CN"
+    elif locale == "zh_Hant":
+        locale = "zh_TW"
+    # In weblate, the language code is lowercase.
+    # ex) Th -> th etc.
+    if '_' in locale:
+        locale_split = locale.split('_')
+        locale = locale_split[0].lower() + '_' + locale_split[1]
+    else:
+        locale = locale.lower()
+    return locale
+
+
+def sanitize_slug(name: str) -> str:
+    """Sanitize slug for standardization
+
+    Replace special characters(dot, space, etc.) with hyphens.
+    ex) stable/2025.02 -> stable-2025-02, zun_ui -> zun-ui etc.
+
+    :param name: string name to sanitize
+    :returns: string sanitized name
+    """
+    return re.sub(r'-+', '-', re.sub(r'[^a-zA-Z0-9_-]', '-', name)).strip('-')
+
+
+def is_retryable_status(status_code: int) -> bool:
+    """Whether a response status code is worth retrying
+
+    Meant to be called only after the caller's own success check has
+    already failed for this response. A non-4xx code reaching that
+    point (e.g. upload_po_file's 200 with result=false) isn't a
+    rejection, so it's worth retrying, same as a 5xx (server-side,
+    usually transient) failure. 423 (Weblate could not obtain its
+    internal repository lock - e.g. another write to the same
+    component was still in progress) and 429 (rate limited) are also
+    transient despite being in the 4xx range: the condition they
+    describe is expected to clear on its own shortly. Any other 4xx
+    means the server rejected this exact request, so an identical
+    retry cannot succeed.
+
+    :param status_code: HTTP status code from a Weblate API response
+    :returns: True if retrying the same request may succeed later
+    """
+    if status_code < 400 or status_code >= 500:
+        return True
+    return status_code in (423, 429)
+
+
+def get_component_display_name(component_name: str) -> str:
+    """Get the Weblate-facing display name for a component
+
+    The internal component identifier is a flat, hyphen-joined string
+    (e.g. "horizon-django") used for slug/path construction throughout
+    this pipeline. For components representing a specific Django
+    module (<module>-django / <module>-djangojs), Weblate's 'name'
+    field should instead read like the original Zanata document name,
+    with '/' separating the module from its type (e.g.
+    "horizon/django"). The slug (URL/API identifier) still comes from
+    sanitize_slug() on the original hyphenated identifier and is
+    unaffected by this.
+
+    :param component_name: internal component identifier
+    :returns: display name to use for Weblate's 'name' field
+    """
+    if component_name.endswith('-django'):
+        return f'{component_name[:-len("-django")]}/django'
+    if component_name.endswith('-djangojs'):
+        return f'{component_name[:-len("-djangojs")]}/djangojs'
+    return component_name
+
+
+def get_filemask(component_name: str) -> str:
+    """Get filemask for the component
+
+    It follows the pattern that zanata uses.
+
+    :param component_name: string name of the component
+    :returns: string filemask for the component
+    """
+    if component_name == 'releasenotes':
+        return 'source/locale/*/LC_MESSAGES/releasenotes.po'
+    # In Weblate, it doesn't allow the same component name.
+    # When the project has multiple horizon modules,
+    # the component name is <module_name>-django/djangojs.
+    # But, the filemask is same for consistency with other components.
+    elif component_name == 'django' or component_name.endswith('-django'):
+        return 'locale/*/LC_MESSAGES/django.po'
+    elif component_name == 'djangojs' or component_name.endswith('-djangojs'):
+        return 'locale/*/LC_MESSAGES/djangojs.po'
+    # All of the doc components use the same filemask.
+    # ex) doc, doc-install, etc.
+    elif component_name.startswith('doc'):
+        return f'source/locale/*/LC_MESSAGES/{component_name}.po'
+    else:
+        return f'locale/*/LC_MESSAGES/{component_name}.po'
+
+
+def get_version_name(version: str) -> str:
+    return version.replace('/', '-')
+
+
+# Matches printf-style placeholders, including flag/width/precision
+# modifiers (%s, %d, %(name)s, %(name)3d, %.2f, ...), and str.format-
+# style placeholders ({}, {0}, {name}, {name!r}, ...). The space flag
+# (e.g. "% d") is deliberately excluded from the flag characters below
+# - unlike '-'/'+'/'0'/'#', which rarely appear right after a literal
+# '%' in ordinary prose, a bare "% " is extremely common in natural
+# text (e.g. "100% done"), so including it would misdetect ordinary
+# sentences as placeholders far more often than it would catch a
+# genuine space-flag placeholder, which is rare in practice.
+#
+# The trailing conversion character is restricted to Python's actual
+# %-formatting conversion types (diouxXeEfFgGcrs%) rather than any
+# letter - a bare [a-zA-Z] also matches width-digits-then-letter
+# sequences that happen to appear in percent-encoded URLs in source
+# text (e.g. "%3A", "%5B" - neither 'A' nor 'B' is a real conversion
+# type, so this whitelist stops them from being misread as
+# placeholders).
+_PRINTF_MODIFIERS = (
+    r'[-+0#]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[diouxXeEfFgGcrs%]'
+)
+_PLACEHOLDER_RE = re.compile(
+    r'%\([a-zA-Z_][a-zA-Z0-9_]*\)' + _PRINTF_MODIFIERS +
+    r'|%' + _PRINTF_MODIFIERS +
+    r'|\{[^{}]*\}'
+)
+
+
+def extract_placeholders(text: str) -> list:
+    """Extract printf-style/str.format-style placeholder tokens from text.
+
+    %% and {{/}} are the printf/str.format escapes for a literal '%',
+    '{', '}' (e.g. "10%%s off" renders as the literal text "10%s off",
+    not a %s placeholder) - replaced with a sentinel first so an
+    escaped literal isn't mistaken for the start of a real placeholder.
+
+    :param text: string to scan for placeholders
+    :returns: list of placeholder substrings found, e.g. ['%s', '{name}']
+    """
+    if not text:
+        return []
+    unescaped = text.replace('%%', '\x00').replace(
+        '{{', '\x00').replace('}}', '\x00')
+    return _PLACEHOLDER_RE.findall(unescaped)
+
+
+def load_result_events(result_jsonl_path) -> list:
+    """Read a result JSON Lines log written by WeblateUtils._save_result.
+
+    Tolerates a truncated final line (e.g. the writer process was
+    killed mid-write) by skipping it with a warning instead of
+    discarding every event that came before it.
+
+    :param result_jsonl_path: Path to the result JSON Lines file.
+    :returns: list of event dicts, in the order they were appended.
+    """
+    events = []
+    if not os.path.exists(result_jsonl_path):
+        return events
+    with open(result_jsonl_path, encoding='utf-8') as f:
+        for lineno, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                print(
+                    f"[WARN] {result_jsonl_path}:{lineno}: not valid "
+                    "JSON - skipped",
+                    file=sys.stderr,
+                )
+    return events
+
+
+def reduce_result_events(events) -> dict:
+    """Fold raw check-result events into one merged entry per
+    (project, category, component, locale).
+
+    check_sentence_count and check_sentence_detail each append their
+    own event for the same key; later events overwrite the fields
+    they carry (mirroring the in-place dict merge the previous
+    read-modify-write version of _save_result used to do) so the
+    final entry for a key holds the latest value of every field
+    either check has ever written for it.
+
+    :param events: iterable of event dicts, in append order (e.g.
+        from load_result_events).
+    :returns: dict keyed by "project/category/component/locale",
+        each value a merged entry with a derived 'status' field.
+    """
+    results = {}
+    for event in events:
+        key = (
+            f"{event['project']}/{event['category']}/"
+            f"{event['component']}/{event['locale']}"
+        )
+        entry = results.get(key, {
+            'project': event['project'],
+            'category': event['category'],
+            'component': event['component'],
+            'locale': event['locale'],
+        })
+        entry.update({
+            k: v for k, v in event.items()
+            if k not in ('project', 'category', 'component', 'locale')
+        })
+        results[key] = entry
+
+    # existence_status/fuzzy_status/placeholder_status/count_status/
+    # detail_status/format_status are only set by
+    # check_translation_existence/check_fuzzy_untranslated/
+    # check_placeholder_consistency/check_sentence_count/
+    # check_sentence_detail/check_po_format respectively, when that
+    # check actually runs. Deriving "pass" from count_errors/
+    # detail_errors being empty would be wrong here: an entry that has
+    # never had one of the six checks run against it also has an
+    # empty error list for that check, which is not the same as having
+    # passed it.
+    #
+    # A 'fail' is checked first and wins over a missing status:
+    # test_accuracy() stops after check-translation-existence or
+    # check-sentence-count fails and never calls the checks after it
+    # for that locale, so their status stays None even though the
+    # locale has conclusively failed - that must report as 'fail', not
+    # 'incomplete'.
+    for entry in results.values():
+        existence_status = entry.get('existence_status')
+        fuzzy_status = entry.get('fuzzy_status')
+        placeholder_status = entry.get('placeholder_status')
+        count_status = entry.get('count_status')
+        detail_status = entry.get('detail_status')
+        format_status = entry.get('format_status')
+        statuses = (existence_status, fuzzy_status, placeholder_status,
+                    count_status, detail_status, format_status)
+        if 'fail' in statuses:
+            entry['status'] = 'fail'
+        elif None in statuses:
+            entry['status'] = 'incomplete'
+        else:
+            entry['status'] = 'pass'
+
+    return results
+
+
+class WeblateConfig:
+    """Object that stores Weblate configuration.
+
+    Before using this class, you need to set the
+    WEBLATE_TOKEN and WEBLATE_URL
+    in system environment variables.
+    """
+    def __init__(self):
+        self.token = os.getenv('WEBLATE_TOKEN')
+        self.base_url = os.getenv('WEBLATE_URL')
+
+
+class WeblateUtils:
+    """Utilities for managing Weblate features"""
+    def __init__(self, config: WeblateConfig, result_json_path: str = None):
+        self.config: WeblateConfig = config
+        self.result_json_path = result_json_path
+        # All of the API calls are prefixed with api/
+        self.base_url = urljoin(self.config.base_url, 'api/')
+
+    def _save_result(
+        self,
+        project_name: str,
+        category_name: str,
+        component_name: str,
+        locale: str,
+        **fields,
+    ) -> None:
+        """Append one accuracy-check event to result_json_path.
+
+        check_sentence_count and check_sentence_detail each call this
+        with their own fields, once per process. No-op when
+        result_json_path wasn't given, so JSON persistence stays
+        optional for callers that only want console output.
+
+        This deliberately only appends - it does not read the file at
+        all. An earlier version read the full accumulated result set
+        and rewrote it on every call so that same-key events (e.g. a
+        count check and the detail check that follows it) merged into
+        one record; that made total I/O grow with the square of the
+        number of checks in a run (each of N calls re-read and
+        rewrote up to N-1 prior entries). reduce_result_events() now
+        does that merge - including the count_status/detail_status ->
+        status derivation - at read time instead, from the plain
+        event log this writes.
+
+        The write is wrapped in an exclusive fcntl.flock() so that if
+        multiple check-sentence-count/-detail processes ever append
+        to the same result_json_path concurrently (e.g. a future
+        parallelized test_accuracy/test.sh), their lines can't tear
+        into each other. Without the lock, two processes' write()
+        calls to the same shared file offset can interleave their
+        bytes, producing a line that is neither event's JSON - unlike
+        a truncated last line (see load_result_events), a torn
+        interior line isn't distinguishable from valid JSON that
+        happens to be malformed, so it's not safely recoverable after
+        the fact and must be prevented at write time instead.
+        """
+        if not self.result_json_path:
+            return
+
+        event = {
+            'project': project_name,
+            'category': category_name,
+            'component': component_name,
+            'locale': locale,
+            'checked_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
+            **fields,
+        }
+        line = json.dumps(event, ensure_ascii=False, sort_keys=True) + '\n'
+
+        result_path = Path(self.result_json_path)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(result_path, 'a', encoding='utf-8') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            f.write(line)
+
+    @property
+    def _headers(self) -> dict:
+        """Get headers for the request
+
+        Create a new dict of headers on each call
+        to avoid potential issues.
+        This prevents issues where headers modified in one method
+        could affect subsequent requests.
+
+        :returns: A dict of headers
+        """
+        return {
+            'Authorization': f'Token {self.config.token}',
+        }
+
+    def _get(self, url, params=None, raise_error=False) -> requests.Response:
+        """Get query to request
+
+        Weblate uses a RESTful API, so query parameters
+        should be passed in the URL.
+
+        :param url: The URL to send the request to
+        :param params: The parameters to send in the request
+        :param raise_error: (Optional)
+            If status code is over 400,
+            raise an exception.
+        :raises: requests.exceptions.RequestException
+            If request is failed. If raise_error is True,
+            this exception will be raised.
+            When it's raised, the function will exit
+            with status code 1.
+        :returns: requests.Response
+        """
+        try:
+            response = requests.get(url, headers=self._headers, params=params)
+            if raise_error:
+                response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Failed to get: {url}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"[ERROR] Response details: {e.response.text}")
+            sys.exit(1)
+
+    def _post(
+        self,
+        url: str,
+        data: str = None,
+        file: dict = None,
+        raise_error: bool = False
+    ) -> requests.Response:
+        """Post query to request
+
+        When the file is included in the request,
+        the file should be passed in the file parameter.
+
+        :param url: The URL string to send the request to
+        :param data: (Optional) The data string to send in the request
+        :param file: (Optional) The file dictionary to send in the request
+        :param raise_error: (Optional)
+            If status code is over 400,
+            raise an exception.
+        :raises: requests.exceptions.RequestException
+            If request is failed. If raise_error is True,
+            this exception will be raised.
+            When it's raised, the function will exit
+            with status code 1.
+        :returns: requests.Response
+        """
+        try:
+            # The requests.post automatically set the Content-Type
+            # depending on the post type.
+            if file:
+                response = requests.post(
+                    url, data=data, files=file, headers=self._headers)
+            else:
+                response = requests.post(url, json=data, headers=self._headers)
+
+            if raise_error:
+                response.raise_for_status()
+
+            return response
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Failed to post: {url}")
+            print(f"[ERROR] Exception: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"[ERROR] Response: {e.response.text}")
+            sys.exit(1)
+
+    def _post_with_retry(
+        self,
+        url: str,
+        success: Callable[[requests.Response], bool],
+        build_kwargs: Callable[[], dict],
+        action: str,
+        retry_count: int = 3,
+        sleep_time: int = 15,
+    ) -> requests.Response:
+        """POST with retry for transient failures
+
+        Retries up to retry_count times when the response fails
+        `success` but its status is retryable (see
+        is_retryable_status - 5xx, 423 repository-locked, 429 rate
+        limited, or any non-4xx that still didn't count as success).
+        A genuine 4xx rejection, or exhausting all retries, exits the
+        process - callers rely on this instead of checking a return
+        value.
+
+        :param url: request URL
+        :param success: predicate(response) -> True if this attempt
+            should be treated as successful
+        :param build_kwargs: called fresh before every attempt to
+            build this attempt's `data`/`file` kwargs for `_post` -
+            needed because a file-like request body (e.g. a zip
+            buffer) is consumed once sent, so callers must rebuild or
+            re-seek it for each retry
+        :param action: short label for this operation, used in log
+            and error messages (e.g. "Create component")
+        :returns: the successful response
+        """
+        assert retry_count >= 1, "retry_count must allow at least one attempt"
+        for cnt in range(retry_count):
+            response = self._post(url=url, **build_kwargs())
+
+            if success(response):
+                return response
+
+            if not is_retryable_status(response.status_code):
+                print(f"[ERROR] {action} rejected "
+                      f"({response.status_code}), not retrying: "
+                      f"{response.text}")
+                sys.exit(1)
+
+            if cnt + 1 == retry_count:
+                break
+
+            print(f"[ERROR] {action} attempt {cnt + 1} failed "
+                  f"({response.status_code}), retrying: "
+                  f"{response.text}")
+            time.sleep(sleep_time)
+
+        print(f"[ERROR] {action} failed after {retry_count} attempts "
+              f"({response.status_code}): {response.text}")
+        sys.exit(1)
+
+    def _build_category_list(self, project_name: str) -> dict:
+        """Get category list for the project
+
+        :param project_name: The name of the project
+        :returns: A dictionary of categories
+            Each key is a category name and
+            the value is a dictionary representing a category ID.
+        """
+        path = f'projects/{sanitize_slug(project_name)}/categories/'
+        url = urljoin(self.base_url, path)
+        response = self._get(url, raise_error=True)
+
+        # The dictionary is set as defaultdict(dict)
+        # to clearly indicate the value is a category id.
+        category_dict = defaultdict(dict)
+        for category in response.json()['results']:
+            category_dict[category['name']] = {
+                'id': category['id'],
+            }
+        return category_dict
+
+    def _get_category_id(self, project_name: str, category_name: str) -> int:
+        """Get category id for the project
+
+        In weblate, referencing a category requires
+        using its unique category ID.
+
+        :param project_name: The name of the project
+        :param category_name: The name of the category
+        :returns: The id of the category
+        """
+        category_dict = self._build_category_list(project_name)
+        if not category_dict.get(get_version_name(category_name)):
+            print("[ERROR] Category does not exist: ", category_name)
+            sys.exit(1)
+
+        return category_dict[get_version_name(category_name)]['id']
+
+    def create_project(self, project_name: str) -> None:
+        """Create a new project
+
+        If the project does not exist, create a new one.
+
+        :param project_name: The name of the project
+        """
+
+        path = f'projects/{sanitize_slug(project_name)}/'
+        url = urljoin(self.base_url, path)
+        response = self._get(url)
+        if response.status_code == 200:
+            print("[INFO] Project already exists: ", project_name)
+        elif response.status_code == 404:
+            print("[INFO] Project does not exist: ", project_name)
+
+            path = 'projects/'
+            url = urljoin(self.base_url, path)
+            data = {
+                'name': project_name,
+                'slug': sanitize_slug(project_name),
+                'web': f'https://opendev.org/openstack/{project_name}',
+            }
+            _ = self._post(url=url, data=data, raise_error=True)
+
+            print("[INFO] Project created: ", project_name)
+        else:
+            print("[ERROR] Failed to create project: ",
+                  json.dumps(response.json()))
+
+    def create_category(self, project_name: str, category_name: str) -> None:
+        """Create a new category to specify the version.
+
+        If the category does not exist, create a new one.
+
+        :param project_name: The name of the project
+        :param category_name: The name of the category
+        """
+
+        category_dict = self._build_category_list(project_name)
+        is_exists = bool(category_dict.get(get_version_name(category_name)))
+        if not is_exists:
+            print("[INFO] Category does not exist: ", category_name)
+
+            path = 'categories/'
+            url = urljoin(self.base_url, path)
+            data = {
+                'name': get_version_name(category_name),
+                'slug': sanitize_slug(category_name),
+                'project': urljoin(
+                    self.base_url, f'projects/{sanitize_slug(project_name)}/'),
+            }
+            _ = self._post(url=url, data=data, raise_error=True)
+
+            print("[INFO] Category created: ", category_name)
+        else:
+            print("[INFO] Category already exists: ", category_name)
+
+    def create_glossary(self, project_name: str) -> None:
+        """Create a new glossary component
+
+        If the glossary component does not exist, create a new one.
+        In glossary component, the filemask and file_format is tbx.
+
+        :param project_name: The name of the project
+        """
+        path = (f'components/{sanitize_slug(project_name)}/'
+                f'glossary/')
+        url = urljoin(self.base_url, path)
+        response = self._get(url)
+        if response.status_code == 200:
+            print("[INFO] Glossary Component already exists.")
+        elif response.status_code == 404:
+            print("[INFO] Glossary Component does not exist")
+
+            path = f'projects/{sanitize_slug(project_name)}/components/'
+            url = urljoin(self.base_url, path)
+            data = {
+                'name': 'glossary',
+                'slug': 'glossary',
+                'file_format': 'tbx',
+                'filemask': '*.tbx',
+                'repo': 'local:',
+                'vcs': 'local',
+                'source_language': 'en_US',
+                "is_glossary": True,
+            }
+            _ = self._post(url=url, data=data, raise_error=True)
+
+            print("[INFO] Glossary created.")
+        else:
+            print("[ERROR] Failed to create glossary: ",
+                  json.dumps(response.json()))
+            sys.exit(1)
+
+    def create_component(
+            self,
+            project_name: str,
+            category_name: str,
+            component_name: str,
+            pot_path: str
+    ) -> None:
+        """Create a new component
+
+        If the component does not exist, create a new one. Retries
+        up to 3 times if Weblate could not obtain its internal
+        repository lock (423) or rate-limited us (429) - see
+        is_retryable_status.
+
+        :param project_name: The name of the project
+        :param category_name: The name of the category
+        :param component_name: The name of the component
+        :param pot_path: The path to the pot file
+        """
+
+        path = (f'components/{sanitize_slug(project_name)}/'
+                f'{sanitize_slug(category_name)}%252F'
+                f'{sanitize_slug(component_name)}/')
+        url = urljoin(self.base_url, path)
+        response = self._get(url)
+
+        if response.status_code == 200:
+            print("[INFO] Component already exists: ", component_name)
+            return
+        if response.status_code != 404:
+            print("[ERROR] Failed to create component: ",
+                  json.dumps(response.json()))
+            sys.exit(1)
+
+        print("[INFO] Component does not exist: ", component_name)
+
+        path = f'projects/{sanitize_slug(project_name)}/components/'
+        url = urljoin(self.base_url, path)
+        category_id = self._get_category_id(project_name, category_name)
+        category_url = urljoin(
+            self.base_url,
+            f"categories/{category_id}/")
+
+        # Create a zip file containing the pot file for Weblate
+        # component initialization. new_base must match the arcname
+        # written below exactly, since Weblate looks for that
+        # filename inside the uploaded zip - for suffixed components
+        # (e.g. "horizon-django", whose pot file is generated as
+        # plain "django.pot") that name differs from
+        # f"{component_name}.pot".
+        pot_filename = os.path.basename(pot_path)
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(
+                zip_buf, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            zip_file.write(pot_path, pot_filename)
+        data = {
+            'name': get_component_display_name(component_name),
+            'slug': sanitize_slug(component_name),
+            'file_format': 'po',
+            'filemask': get_filemask(component_name),
+            'repo': 'local:',
+            'vcs': 'local',
+            'source_language': 'en_US',
+            'new_base': pot_filename,
+            'category': category_url,
+        }
+
+        def build_kwargs():
+            # Rewind before every attempt: requests reads the buffer
+            # to EOF while sending it, so a retry with an unseeked
+            # buffer would upload an empty zip.
+            zip_buf.seek(0)
+            return {
+                'data': data,
+                'file': {
+                    'zipfile': (
+                        f'{component_name}.zip',
+                        zip_buf,
+                        'application/zip',
+                    ),
+                },
+            }
+
+        self._post_with_retry(
+            url=url,
+            success=lambda r: r.status_code == 201,
+            build_kwargs=build_kwargs,
+            action='Create component',
+        )
+        print("[INFO] Component created: ", component_name)
+
+    def create_translation(
+            self,
+            project_name: str,
+            category_name: str,
+            component_name: str,
+            locale: str
+    ) -> None:
+        """Create a new translation
+
+        If the translation does not exist, create a new one. Retries
+        up to 3 times if Weblate could not obtain its internal
+        repository lock (423) or rate-limited us (429) - see
+        is_retryable_status - since those are expected to clear on
+        their own shortly (e.g. another write to the same component
+        was still in progress).
+
+        :param project_name: The name of the project
+        :param category_name: The name of the category
+        :param component_name: The name of the component
+        :param locale: The locale of the translation
+        """
+
+        locale = sanitize_locale(locale)
+        path = (f'translations/{sanitize_slug(project_name)}/'
+                f'{sanitize_slug(category_name)}%252F'
+                f'{sanitize_slug(component_name)}/'
+                f'{locale}/')
+        url = urljoin(self.base_url, path)
+        response = self._get(url)
+
+        if response.status_code == 200:
+            print("[INFO] Translation already exists: ", locale)
+            return
+        if response.status_code != 404:
+            print("[ERROR] Failed to create translation: ",
+                  json.dumps(response.json()))
+            sys.exit(1)
+
+        path = (f'components/{sanitize_slug(project_name)}/'
+                f'{sanitize_slug(category_name)}%252F'
+                f'{sanitize_slug(component_name)}/'
+                f'translations/')
+        url = urljoin(self.base_url, path)
+        data = {
+            'language_code': locale,
+        }
+
+        self._post_with_retry(
+            url=url,
+            success=lambda r: r.status_code == 201,
+            build_kwargs=lambda: {'data': data},
+            action='Create translation',
+        )
+        print("[INFO] Translation created: ", locale)
+
+    def upload_po_file(
+        self,
+        project_name: str,
+        category_name: str,
+        component_name: str,
+        locale: str,
+        po_path: str
+    ) -> None:
+        """Upload a translation po file
+
+        Retries up to 3 times for anything other than success (200
+        with result=true) or a non-retryable rejection (see
+        is_retryable_status - most 4xx codes mean the server rejected
+        this exact request, so an identical retry cannot help and
+        those exit immediately instead of spending the retry budget).
+
+        :param project_name: The name of the project
+        :param category_name: The name of the category
+        :param component_name: The name of the component
+        :param locale: The locale of the translation
+        :param po_path: The path to the po file
+        """
+
+        locale = sanitize_locale(locale)
+        path = (f'translations/{sanitize_slug(project_name)}/'
+                f'{sanitize_slug(category_name)}%252F'
+                f'{sanitize_slug(component_name)}/'
+                f'{locale}/file/')
+        url = urljoin(self.base_url, path)
+        print(f"[INFO] Uploading PO file: {po_path}")
+        with open(po_path, 'rb') as f:
+            def build_kwargs():
+                # Rewind before every attempt: requests reads the
+                # file to EOF while sending it, so a retry without
+                # this would upload an empty file.
+                f.seek(0)
+                return {'file': {'file': f}, 'data': {'method': 'replace'}}
+
+            self._post_with_retry(
+                url=url,
+                success=lambda r: (
+                    r.status_code == 200 and r.json()['result'] is True),
+                build_kwargs=build_kwargs,
+                action='Upload',
+            )
+        print("[INFO] Upload successful: ", component_name, locale)
+
+    def download_translation_file(
+        self,
+        project_name: str,
+        po_path: str,
+    ) -> None:
+        """Download translation file from Weblate
+
+        :param project_name: Name of the project
+        :param po_path: Path to the po file to save
+        """
+        path = (f'projects/{sanitize_slug(project_name)}/file/')
+        url = urljoin(self.base_url, path)
+        response = self._get(url, raise_error=True)
+        if response.status_code == 200:
+            with open(po_path, 'wb') as f:
+                f.write(response.content)
+            print(
+                "[INFO] Successfully downloaded translation "
+                f"file from: {url}"
+            )
+            print(f"[INFO] Saved to: {po_path}")
+        else:
+            print(
+                "[ERROR] Failed to download translation file: "
+                f"{response.status_code}"
+            )
+            sys.exit(1)
+
+        return None
+
+    def check_translation_existence(
+        self,
+        project_name: str,
+        category_name: str,
+        component_name: str,
+        locale: str,
+        zanata_po_path: str,
+        weblate_po_path: str,
+    ) -> bool:
+        """Check that the Zanata and Weblate PO files actually exist.
+
+        The accuracy-check loop iterates locales driven by which
+        Zanata PO files exist locally. If a component - or just one
+        locale of it - was never created in Weblate, its PO file
+        never lands in the downloaded/extracted Weblate translation
+        tree. Without this check, that absence only ever surfaced as
+        an uncaught FileNotFoundError deep inside polib.pofile() in
+        check_sentence_count, indistinguishable from any other
+        unexpected parse/IO failure. This promotes that absence to
+        its own explicit, recorded check, run before count/detail so
+        those checks are never attempted against a file that isn't
+        there.
+
+        :param project_name: Name of the project
+        :param category_name: Name of the category
+        :param component_name: Name of the component
+        :param locale: Name of the locale
+        :param zanata_po_path: Path to the zanata po file
+        :param weblate_po_path: Path to the weblate po file
+        :returns: True if both files exist, False otherwise
+        """
+        missing = []
+        if not os.path.isfile(zanata_po_path):
+            missing.append(f"zanata:{zanata_po_path}")
+        if not os.path.isfile(weblate_po_path):
+            missing.append(f"weblate:{weblate_po_path}")
+
+        if missing:
+            error_msg = (
+                "Component/locale does not exist - missing PO "
+                "file(s): " + ", ".join(missing)
+            )
+            print(f"[ERROR] {error_msg}")
+            self._save_result(
+                project_name, category_name, component_name, locale,
+                existence_errors=[error_msg],
+                existence_status='fail',
+                # None of the later checks can run this pass. Reset
+                # every field they'd otherwise set explicitly so a
+                # stale pass/fail left over from an earlier successful
+                # run of this same key doesn't linger next to today's
+                # existence failure.
+                fuzzy_status=None,
+                fuzzy_zanata=None,
+                fuzzy_weblate=None,
+                untranslated_zanata=None,
+                untranslated_weblate=None,
+                fuzzy_increase=None,
+                untranslated_increase=None,
+                fuzzy_errors=[],
+                placeholder_status=None,
+                placeholder_checked=None,
+                placeholder_mismatches=None,
+                placeholder_errors=[],
+                count_status=None,
+                total_zanata=None,
+                total_weblate=None,
+                translated_zanata=None,
+                translated_weblate=None,
+                count_errors=[],
+                detail_status=None,
+                total_entries=None,
+                mismatch_count=None,
+                missing_count=None,
+                extra_count=None,
+                detail_errors=[],
+                format_status=None,
+                format_errors=[],
+            )
+            return False
+
+        print(
+            f"[INFO] ✓ Component/locale exists in both Zanata and "
+            f"Weblate: {locale}"
+        )
+        self._save_result(
+            project_name, category_name, component_name, locale,
+            existence_errors=[],
+            existence_status='pass',
+        )
+        return True
+
+    def check_fuzzy_untranslated(
+        self,
+        project_name: str,
+        category_name: str,
+        component_name: str,
+        locale: str,
+        zanata_po_path: str,
+        weblate_po_path: str,
+    ) -> bool:
+        """Classify why the translated count changed after migration.
+
+        check_sentence_count fails outright on any translated-count
+        difference between Zanata and Weblate, without saying whether
+        that difference is benign (content preserved, just re-flagged
+        fuzzy for review) or a real loss (content actually emptied
+        out). This runs before check_sentence_count so that
+        classification - not gated by check_sentence_count's own
+        pass/fail - is always recorded to help a human triage a count
+        failure. It does not change check_sentence_count's own
+        equality check, which stays as strict as before.
+
+        polib.POEntry.translated() excludes both obsolete and fuzzy
+        entries, and POFile.untranslated_entries() excludes both
+        translated and fuzzy entries, so among the non-obsolete
+        entries every entry is in exactly one of translated/fuzzy/
+        untranslated - counting fuzzy and untranslated directly is
+        enough to classify the change without needing the total/
+        translated counts check_sentence_count already computes.
+
+        :param project_name: Name of the project
+        :param category_name: Name of the category
+        :param component_name: Name of the component
+        :param locale: Name of the locale
+        :param zanata_po_path: Path to the zanata po file
+        :param weblate_po_path: Path to the weblate po file
+        :returns: True unless the untranslated count increased
+            (a decrease not explained by fuzzy re-marking alone)
+        """
+        zanata_po = polib.pofile(zanata_po_path, encoding='utf-8')
+        weblate_po = polib.pofile(weblate_po_path, encoding='utf-8')
+
+        zanata_fuzzy = len(zanata_po.fuzzy_entries())
+        weblate_fuzzy = len(weblate_po.fuzzy_entries())
+        zanata_untranslated = len(zanata_po.untranslated_entries())
+        weblate_untranslated = len(weblate_po.untranslated_entries())
+
+        fuzzy_increase = weblate_fuzzy - zanata_fuzzy
+        untranslated_increase = weblate_untranslated - zanata_untranslated
+
+        errors = []
+        if untranslated_increase > 0:
+            error_msg = (
+                f"Untranslated count increased by "
+                f"{untranslated_increase} (zanata="
+                f"{zanata_untranslated} -> weblate="
+                f"{weblate_untranslated}) - not explained by fuzzy "
+                f"re-marking alone, possible translation loss"
+            )
+            print(f"[ERROR] {error_msg}")
+            errors.append(error_msg)
+
+        fuzzy_ok = untranslated_increase <= 0
+
+        if fuzzy_increase > 0:
+            print(
+                f"[INFO] Fuzzy count increased by {fuzzy_increase} "
+                f"(zanata={zanata_fuzzy} -> weblate={weblate_fuzzy}) "
+                f"- content preserved, marked fuzzy for review"
+            )
+
+        fuzzy_fields = {
+            'fuzzy_zanata': zanata_fuzzy,
+            'fuzzy_weblate': weblate_fuzzy,
+            'untranslated_zanata': zanata_untranslated,
+            'untranslated_weblate': weblate_untranslated,
+            'fuzzy_increase': fuzzy_increase,
+            'untranslated_increase': untranslated_increase,
+            'fuzzy_errors': errors,
+        }
+
+        if not fuzzy_ok:
+            self._save_result(
+                project_name, category_name, component_name, locale,
+                fuzzy_status='fail',
+                **fuzzy_fields,
+                # Placeholder/count/detail/format cannot run this
+                # pass. Reset their status explicitly so a stale
+                # pass/fail left over from an earlier successful run
+                # of this same key doesn't linger next to today's
+                # fuzzy failure.
+                placeholder_status=None,
+                placeholder_checked=None,
+                placeholder_mismatches=None,
+                placeholder_errors=[],
+                count_status=None,
+                total_zanata=None,
+                total_weblate=None,
+                translated_zanata=None,
+                translated_weblate=None,
+                count_errors=[],
+                detail_status=None,
+                total_entries=None,
+                mismatch_count=None,
+                missing_count=None,
+                extra_count=None,
+                detail_errors=[],
+                format_status=None,
+                format_errors=[],
+            )
+            return False
+
+        print(
+            "[INFO] ✓ No untranslated increase "
+            f"(zanata={zanata_untranslated}, "
+            f"weblate={weblate_untranslated})"
+        )
+        self._save_result(
+            project_name, category_name, component_name, locale,
+            fuzzy_status='pass',
+            **fuzzy_fields,
+        )
+
+        return True
+
+    def check_placeholder_consistency(
+        self,
+        project_name: str,
+        category_name: str,
+        component_name: str,
+        locale: str,
+        zanata_po_path: str,
+        weblate_po_path: str,
+    ) -> bool:
+        """Check that printf/str.format placeholders survive migration.
+
+        check_sentence_detail already flags whether Zanata and Weblate
+        msgstr differ, but not why a difference matters. A placeholder
+        (%s, %(name)s, {name}, ...) dropped or mangled during
+        migration still counts as "translated", but breaks string
+        formatting at runtime - a much higher-severity class of
+        mismatch than a wording difference. For entries whose source
+        (msgid/msgid_plural) contains at least one placeholder, this
+        compares the placeholder set actually present in the Zanata
+        translation against the one in the Weblate translation and
+        fails if they differ, isolating that specific failure mode
+        out of check_sentence_detail's generic mismatch signal.
+
+        This deliberately compares Zanata's translation directly to
+        Weblate's, not each side to the English source: gettext plural
+        rules mean a language can have a different number of plural
+        forms than the two (singular/plural) English source strings,
+        so there is no reliable way to say which of msgid/msgid_plural
+        a given translated form "should" match. Comparing Zanata to
+        Weblate at the same plural index sidesteps that ambiguity
+        entirely and stays consistent with this project's baseline:
+        Zanata is the source of truth Weblate must match, for
+        placeholders exactly as for everything else check_sentence_*
+        already compares.
+
+        :param project_name: Name of the project
+        :param category_name: Name of the category
+        :param component_name: Name of the component
+        :param locale: Name of the locale
+        :param zanata_po_path: Path to the zanata po file
+        :param weblate_po_path: Path to the weblate po file
+        :returns: True unless a placeholder-set mismatch was found
+        """
+        zanata_po = polib.pofile(zanata_po_path, encoding='utf-8')
+        weblate_po = polib.pofile(weblate_po_path, encoding='utf-8')
+
+        zanata_entries = [e for e in zanata_po if not e.obsolete]
+        weblate_entries = [e for e in weblate_po if not e.obsolete]
+        weblate_dict = {
+            (entry.msgid, entry.msgctxt): entry for entry in weblate_entries
+        }
+
+        checked_count = 0
+        errors = []
+
+        for zanata_entry in zanata_entries:
+            msgid = zanata_entry.msgid
+            msgctxt = zanata_entry.msgctxt
+            weblate_entry = weblate_dict.get((msgid, msgctxt))
+            # A missing/extra entry is check_sentence_detail's job to
+            # report, not this check's.
+            if weblate_entry is None:
+                continue
+
+            has_placeholder = (
+                extract_placeholders(msgid) or
+                extract_placeholders(zanata_entry.msgid_plural)
+            )
+            if not has_placeholder:
+                continue
+
+            # Fuzzy/untranslated entries have no finished content to
+            # judge placeholder-preservation on - that gap is
+            # check_fuzzy_untranslated's and check_sentence_count's
+            # job, not this check's.
+            if not (zanata_entry.translated() and
+                    weblate_entry.translated()):
+                continue
+
+            checked_count += 1
+
+            if zanata_entry.msgid_plural:
+                common_indices = sorted(
+                    zanata_entry.msgstr_plural.keys() &
+                    weblate_entry.msgstr_plural.keys()
+                )
+                if not common_indices:
+                    # No overlapping plural-form index to compare at
+                    # all (check_sentence_detail separately reports
+                    # this as a "Plural form count mismatch"). Without
+                    # this, an entry here would silently count as
+                    # "checked" with zero placeholder mismatches even
+                    # though none of Weblate's plural forms could
+                    # actually be verified against Zanata's.
+                    error_msg = (
+                        f"Placeholder mismatch for msgid: '{msgid}' "
+                        f"msgctxt: '{msgctxt}' - no common plural "
+                        f"form indices between Zanata "
+                        f"({sorted(zanata_entry.msgstr_plural.keys())}) "
+                        f"and Weblate "
+                        f"({sorted(weblate_entry.msgstr_plural.keys())}) "
+                        f"to compare"
+                    )
+                    print(f"[ERROR] {error_msg}")
+                    errors.append(error_msg)
+                    continue
+                units = [
+                    (
+                        f'index {index}',
+                        sorted(extract_placeholders(
+                            zanata_entry.msgstr_plural[index])),
+                        sorted(extract_placeholders(
+                            weblate_entry.msgstr_plural[index])),
+                    )
+                    for index in common_indices
+                ]
+            else:
+                units = [(
+                    None,
+                    sorted(extract_placeholders(zanata_entry.msgstr)),
+                    sorted(extract_placeholders(weblate_entry.msgstr)),
+                )]
+
+            # Compared as sorted lists, not sets, so that losing one
+            # of several repeated occurrences of the same placeholder
+            # (e.g. "Copied %s to %s" -> only one %s survives) is
+            # still caught - a set comparison would collapse both
+            # sides to {'%s'} and miss it.
+            for unit_label, zanata_actual, weblate_actual in units:
+                if zanata_actual == weblate_actual:
+                    continue
+                location = f" {unit_label}" if unit_label else ""
+                error_msg = (
+                    f"Placeholder mismatch for msgid: '{msgid}' "
+                    f"msgctxt: '{msgctxt}'{location} - Zanata msgstr "
+                    f"placeholders: {zanata_actual} - Weblate "
+                    f"msgstr placeholders: {weblate_actual}"
+                )
+                print(f"[ERROR] {error_msg}")
+                errors.append(error_msg)
+
+        placeholder_fields = {
+            'placeholder_checked': checked_count,
+            'placeholder_mismatches': len(errors),
+            'placeholder_errors': errors,
+        }
+
+        if errors:
+            self._save_result(
+                project_name, category_name, component_name, locale,
+                placeholder_status='fail',
+                **placeholder_fields,
+                # Count/detail/format cannot run this pass. Reset
+                # their status explicitly so a stale pass/fail left
+                # over from an earlier successful run of this same
+                # key doesn't linger next to today's placeholder
+                # failure.
+                count_status=None,
+                total_zanata=None,
+                total_weblate=None,
+                translated_zanata=None,
+                translated_weblate=None,
+                count_errors=[],
+                detail_status=None,
+                total_entries=None,
+                mismatch_count=None,
+                missing_count=None,
+                extra_count=None,
+                detail_errors=[],
+                format_status=None,
+                format_errors=[],
+            )
+            return False
+
+        print(
+            f"[INFO] ✓ No placeholder mismatches "
+            f"({checked_count} entries with placeholders checked)"
+        )
+        self._save_result(
+            project_name, category_name, component_name, locale,
+            placeholder_status='pass',
+            **placeholder_fields,
+        )
+
+        return True
+
+    def check_sentence_count(
+        self,
+        project_name: str,
+        category_name: str,
+        component_name: str,
+        locale: str,
+        zanata_po_path: str,
+        weblate_po_path: str,
+    ) -> bool:
+        """Check the sentence count of the translation
+
+        :param project_name: Name of the project
+        :param category_name: Name of the category
+        :param component_name: Name of the component
+        :param locale: Name of the locale
+        :param zanata_po_path: Path to the zanata po file
+        :param weblate_po_path: Path to the weblate po file
+        :returns: True if the sentence counts match, False otherwise
+        """
+        zanata_po = polib.pofile(
+            zanata_po_path, encoding='utf-8')
+        weblate_po = polib.pofile(
+            weblate_po_path, encoding='utf-8')
+
+        # A fresh check_sentence_count run means any detail-check
+        # result recorded by a previous run is no longer known to be
+        # current. Reset those fields explicitly on every branch below
+        # so they don't linger stale if check_sentence_detail never
+        # gets called this run (e.g. because the count check fails
+        # and the caller stops before Step 2/2).
+        detail_reset = {
+            'detail_status': None,
+            'total_entries': None,
+            'mismatch_count': None,
+            'missing_count': None,
+            'extra_count': None,
+            'detail_errors': [],
+            # Format cannot run this pass either - reset it too so a
+            # stale pass/fail from an earlier successful run doesn't
+            # linger next to today's count failure.
+            'format_status': None,
+            'format_errors': [],
+        }
+
+        # Zanata keeps the obsolete entries.
+        # On the other hand, Weblate deletes them automatically.
+        # Filter out obsolete entries for accurate comparison.
+        zanata_active = [e for e in zanata_po if not e.obsolete]
+        weblate_active = [e for e in weblate_po if not e.obsolete]
+        if len(zanata_active) != len(weblate_active):
+            error_msg = (
+                f"Total sentence count mismatch: "
+                f"{len(zanata_active)}(zanata) != "
+                f"{len(weblate_active)}(weblate)"
+            )
+            print(f"[ERROR] {error_msg}")
+            self._save_result(
+                project_name, category_name, component_name, locale,
+                total_zanata=len(zanata_active),
+                total_weblate=len(weblate_active),
+                # Explicitly clear translated_* rather than omitting
+                # them, so a stale value from a previous successful
+                # run of this same (project, category, component,
+                # locale) doesn't linger next to a "fail" status.
+                translated_zanata=None,
+                translated_weblate=None,
+                count_errors=[error_msg],
+                count_status='fail',
+                **detail_reset,
+            )
+            return False
+
+        total_count = len(zanata_active)
+        zanata_translated = len(
+            [e for e in zanata_active if e.translated()])
+        weblate_translated = len(
+            [e for e in weblate_active if e.translated()])
+
+        if zanata_translated != weblate_translated:
+            error_msg = (
+                f"Translated sentence count mismatch: "
+                f"{zanata_translated}(zanata) != "
+                f"{weblate_translated}(weblate)"
+            )
+            print(f"[ERROR] {error_msg}")
+            self._save_result(
+                project_name, category_name, component_name, locale,
+                total_zanata=total_count,
+                total_weblate=total_count,
+                translated_zanata=zanata_translated,
+                translated_weblate=weblate_translated,
+                count_errors=[error_msg],
+                count_status='fail',
+                **detail_reset,
+            )
+            return False
+
+        print(
+            f"[INFO] ✓ Count matched(translated/total): "
+            f"{zanata_translated}/{len(zanata_active)}"
+        )
+        self._save_result(
+            project_name, category_name, component_name, locale,
+            total_zanata=total_count,
+            total_weblate=total_count,
+            translated_zanata=zanata_translated,
+            translated_weblate=weblate_translated,
+            count_errors=[],
+            count_status='pass',
+            **detail_reset,
+        )
+
+        return True
+
+    def check_sentence_detail(
+        self,
+        project_name: str,
+        category_name: str,
+        component_name: str,
+        locale: str,
+        zanata_po_path: str,
+        weblate_po_path: str,
+    ) -> bool:
+        """Check detailed translation matching and save to TestResult.
+
+        :param project_name: Name of the project
+        :param category_name: Name of the category
+        :param component_name: Name of the component
+        :param locale: Locale code
+        :param zanata_po_path: Path to the zanata po file
+        :param weblate_po_path: Path to the weblate po file
+        :returns: True if the detailed comparison matched, False otherwise
+        """
+        zanata_po = polib.pofile(zanata_po_path, encoding='utf-8')
+        weblate_po = polib.pofile(weblate_po_path, encoding='utf-8')
+
+        # Filter out obsolete entries for accurate comparison
+        zanata_entries = [e for e in zanata_po if not e.obsolete]
+        weblate_entries = [e for e in weblate_po if not e.obsolete]
+
+        # Key entries by (msgid, msgctxt) rather than msgid alone.
+        # The same msgid can legitimately repeat with a different
+        # msgctxt (e.g. the same source string used in two different
+        # screens with different meanings). Keying on msgid alone
+        # collapses those distinct entries into one another - either
+        # matching two unrelated entries as if they were the same
+        # (masking a real mismatch/missing entry), or comparing the
+        # wrong pair and reporting a false mismatch.
+        weblate_dict = {
+            (entry.msgid, entry.msgctxt): entry for entry in weblate_entries
+        }
+
+        mismatch_count = 0
+        missing_count = 0
+        errors = []
+
+        for zanata_entry in zanata_entries:
+            msgid = zanata_entry.msgid
+            msgctxt = zanata_entry.msgctxt
+            key = (msgid, msgctxt)
+
+            # Check if (msgid, msgctxt) exists in Weblate
+            if key not in weblate_dict:
+                error_msg = (
+                    f"Missing in Weblate: msgid='{msgid}' "
+                    f"msgctxt='{msgctxt}'"
+                )
+                print(f"[ERROR] {error_msg}")
+                errors.append(error_msg)
+                missing_count += 1
+                continue
+
+            weblate_entry = weblate_dict[key]
+
+            if zanata_entry.msgid_plural:
+                # Plural entries carry msgstr_plural (a dict of
+                # index -> string) instead of msgstr, which stays ''
+                # for them - a plain msgstr comparison silently
+                # no-ops for every plural entry and never catches a
+                # broken or lost plural translation. Compare index by
+                # index instead.
+                zanata_plurals = zanata_entry.msgstr_plural
+                weblate_plurals = weblate_entry.msgstr_plural
+                entry_mismatched = False
+
+                if zanata_plurals.keys() != weblate_plurals.keys():
+                    error_msg = (
+                        f"Plural form count mismatch for msgid: "
+                        f"'{msgid}' msgctxt: '{msgctxt}' "
+                        f"- Zanata indices: "
+                        f"{sorted(zanata_plurals.keys())} "
+                        f"- Weblate indices: "
+                        f"{sorted(weblate_plurals.keys())}"
+                    )
+                    print(f"[ERROR] {error_msg}")
+                    errors.append(error_msg)
+                    entry_mismatched = True
+
+                common_indices = (
+                    zanata_plurals.keys() & weblate_plurals.keys()
+                )
+                for index in sorted(common_indices):
+                    if zanata_plurals[index] != weblate_plurals[index]:
+                        error_msg = (
+                            f"Plural translation mismatch for msgid: "
+                            f"'{msgid}' msgctxt: '{msgctxt}' "
+                            f"index {index} "
+                            f"- Zanata msgstr[{index}]: "
+                            f"'{zanata_plurals[index]}' "
+                            f"- Weblate msgstr[{index}]: "
+                            f"'{weblate_plurals[index]}'"
+                        )
+                        print(f"[ERROR] {error_msg}")
+                        errors.append(error_msg)
+                        entry_mismatched = True
+
+                if entry_mismatched:
+                    mismatch_count += 1
+            # Compare msgstr from zanata and weblate
+            elif zanata_entry.msgstr != weblate_entry.msgstr:
+                error_msg = (
+                    f"Translation mismatch for msgid: '{msgid}' "
+                    f"msgctxt: '{msgctxt}' "
+                    f"- Zanata msgstr: '{zanata_entry.msgstr}' "
+                    f"- Weblate msgstr: '{weblate_entry.msgstr}'"
+                )
+                print(f"[ERROR] {error_msg}")
+                errors.append(error_msg)
+                mismatch_count += 1
+
+        # Check for entries in Weblate but not in Zanata
+        zanata_keys = {(e.msgid, e.msgctxt) for e in zanata_entries}
+        extra_in_weblate = [
+            key for key in weblate_dict.keys()
+            if key not in zanata_keys
+        ]
+
+        weblate_extra_count = len(extra_in_weblate)
+        if extra_in_weblate:
+            print(
+                f"[ERROR] {weblate_extra_count} entries in "
+                f"Weblate but not in Zanata"
+            )
+
+            # show first 5 extra entries on weblate
+            for msgid, msgctxt in extra_in_weblate[:5]:
+                error_msg = (
+                    f"Extra msgid on weblate: '{msgid[:50]}' "
+                    f"msgctxt: '{msgctxt}'"
+                )
+                print(f"[ERROR] {error_msg}")
+                errors.append(error_msg)
+
+        detail_ok = (
+            mismatch_count == 0 and missing_count == 0 and
+            weblate_extra_count == 0
+        )
+        if detail_ok:
+            print(
+                f"[INFO] ✓ Sentence detail matched: "
+                f"{len(zanata_entries)} entries"
+            )
+        else:
+            print(
+                "[ERROR] Sentence detail check "
+                "completed with issues:"
+            )
+            if mismatch_count > 0:
+                print(f"[ERROR]   - Mismatches: {mismatch_count}")
+            if missing_count > 0:
+                print(f"[ERROR]   - Missing in Weblate: {missing_count}")
+            if weblate_extra_count > 0:
+                print(f"[ERROR]   - Extra in Weblate: {weblate_extra_count}")
+
+        self._save_result(
+            project_name, category_name, component_name, locale,
+            total_entries=len(zanata_entries),
+            mismatch_count=mismatch_count,
+            missing_count=missing_count,
+            extra_count=weblate_extra_count,
+            detail_errors=errors,
+            detail_status='pass' if detail_ok else 'fail',
+            # Format cannot run this pass if detail failed - reset it
+            # explicitly so a stale pass/fail from an earlier
+            # successful run doesn't linger next to today's detail
+            # failure. On success this just gets overwritten by
+            # check_po_format's own call right after, so it's a no-op
+            # there.
+            **({} if detail_ok else {
+                'format_status': None,
+                'format_errors': [],
+            }),
+        )
+
+        return detail_ok
+
+    def check_po_format(
+        self,
+        project_name: str,
+        category_name: str,
+        component_name: str,
+        locale: str,
+        weblate_po_path: str,
+    ) -> bool:
+        """Check that the Weblate PO file is valid gettext PO/MO format.
+
+        check_sentence_count/check_sentence_detail only ever compare
+        whether Zanata and Weblate *agree* on content - they never
+        ask whether that content is itself a syntactically valid PO
+        file. An encoding or format break introduced during migration
+        can leave Zanata/Weblate content looking identical while the
+        Weblate PO is actually broken for a real gettext build (e.g.
+        a msgid/msgstr format-specifier mismatch, or a syntax error).
+        `msgfmt --check` is the same tool the real build uses to
+        compile the PO, so it's a direct check of buildability rather
+        than a re-implementation of gettext's own validation rules.
+
+        :param project_name: Name of the project
+        :param category_name: Name of the category
+        :param component_name: Name of the component
+        :param locale: Name of the locale
+        :param weblate_po_path: Path to the weblate po file
+        :returns: True if msgfmt --check reports no errors
+        """
+        try:
+            result = subprocess.run(
+                ['msgfmt', '--check', '-o', os.devnull, weblate_po_path],
+                capture_output=True, text=True,
+            )
+        except FileNotFoundError:
+            error_msg = (
+                "msgfmt is not installed or not on PATH - cannot "
+                "validate PO format"
+            )
+            print(f"[ERROR] {error_msg}")
+            self._save_result(
+                project_name, category_name, component_name, locale,
+                format_errors=[error_msg],
+                format_status='fail',
+            )
+            return False
+
+        if result.returncode != 0:
+            # msgfmt writes one diagnostic per line to stderr; warnings
+            # (e.g. missing optional header fields) don't affect the
+            # exit code, only fatal errors do, so a non-zero exit here
+            # means a real format problem.
+            error_lines = [
+                line for line in result.stderr.splitlines() if line.strip()
+            ]
+            for line in error_lines:
+                print(f"[ERROR] msgfmt: {line}")
+            self._save_result(
+                project_name, category_name, component_name, locale,
+                format_errors=error_lines,
+                format_status='fail',
+            )
+            return False
+
+        print(f"[INFO] ✓ PO format valid (msgfmt --check): {locale}")
+        self._save_result(
+            project_name, category_name, component_name, locale,
+            format_errors=[],
+            format_status='pass',
+        )
+        return True
+
+
+def setup_argument_parser():
+    """Setup command line argument parser with subcommands."""
+    parser = argparse.ArgumentParser(
+        description='Weblate management utilities')
+    subparser = parser.add_subparsers(
+        dest='command', help='Available commands')
+    # Create project command
+    create_project_parser = subparser.add_parser(
+        'create-project', help='Create a new project')
+    create_project_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    # Create category command
+    create_category_parser = subparser.add_parser(
+        'create-category', help='Create a new category')
+    create_category_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    create_category_parser.add_argument(
+        '--category', required=True, help='Name of the category')
+    # Create component command
+    create_component_parser = subparser.add_parser(
+        'create-component', help='Create a new component')
+    create_component_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    create_component_parser.add_argument(
+        '--category', required=True, help='Name of the category')
+    create_component_parser.add_argument(
+        '--component', required=True, help='Name of the component')
+    create_component_parser.add_argument(
+        '--pot-path', required=True, help='Path to the pot file')
+    # Create glossary command
+    create_glossary_parser = subparser.add_parser(
+        'create-glossary', help='Create a new glossary')
+    create_glossary_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    # Create translation command
+    create_translation_parser = subparser.add_parser(
+        'create-translation', help='Create a new translation')
+    create_translation_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    create_translation_parser.add_argument(
+        '--category', required=True, help='Name of the category')
+    create_translation_parser.add_argument(
+        '--component', required=True, help='Name of the component')
+    create_translation_parser.add_argument(
+        '--locale', required=True, help='Name of the locale')
+    # Upload PO file command
+    upload_po_file_parser = subparser.add_parser(
+        'upload-po-file', help='Upload a new po file')
+    upload_po_file_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    upload_po_file_parser.add_argument(
+        '--category', required=True, help='Name of the category')
+    upload_po_file_parser.add_argument(
+        '--component', required=True, help='Name of the component')
+    upload_po_file_parser.add_argument(
+        '--locale', required=True, help='Name of the locale')
+    upload_po_file_parser.add_argument(
+        '--po-path', required=True, help='Path to po file')
+    # Download translation file command
+    download_translation_file_parser = subparser.add_parser(
+        'download-translation-file',
+        help='Download a translation file from Weblate')
+    download_translation_file_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    download_translation_file_parser.add_argument(
+        '--po-path', required=True, help='Path to po file')
+    # Check translation existence command
+    check_translation_existence_parser = subparser.add_parser(
+        'check-translation-existence',
+        help='Check that the component/locale PO files exist')
+    check_translation_existence_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    check_translation_existence_parser.add_argument(
+        '--category', required=True, help='Name of the category')
+    check_translation_existence_parser.add_argument(
+        '--component', required=True, help='Name of the component')
+    check_translation_existence_parser.add_argument(
+        '--locale', required=True, help='Name of the locale')
+    check_translation_existence_parser.add_argument(
+        '--zanata-po-path', required=True, help='Path to the zanata po file')
+    check_translation_existence_parser.add_argument(
+        '--weblate-po-path', required=True, help='Path to weblate po')
+    check_translation_existence_parser.add_argument(
+        '--result-json', required=False,
+        help='Path to result JSON Lines log (append-only)')
+    # Check fuzzy/untranslated command
+    check_fuzzy_untranslated_parser = subparser.add_parser(
+        'check-fuzzy-untranslated',
+        help='Classify a translated-count change as fuzzy re-marking '
+             'or possible translation loss')
+    check_fuzzy_untranslated_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    check_fuzzy_untranslated_parser.add_argument(
+        '--category', required=True, help='Name of the category')
+    check_fuzzy_untranslated_parser.add_argument(
+        '--component', required=True, help='Name of the component')
+    check_fuzzy_untranslated_parser.add_argument(
+        '--locale', required=True, help='Name of the locale')
+    check_fuzzy_untranslated_parser.add_argument(
+        '--zanata-po-path', required=True, help='Path to the zanata po file')
+    check_fuzzy_untranslated_parser.add_argument(
+        '--weblate-po-path', required=True, help='Path to weblate po')
+    check_fuzzy_untranslated_parser.add_argument(
+        '--result-json', required=False,
+        help='Path to result JSON Lines log (append-only)')
+    # Check placeholder consistency command
+    check_placeholder_consistency_parser = subparser.add_parser(
+        'check-placeholder-consistency',
+        help='Check that printf/str.format placeholders in the source '
+             'survive translation on both sides')
+    check_placeholder_consistency_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    check_placeholder_consistency_parser.add_argument(
+        '--category', required=True, help='Name of the category')
+    check_placeholder_consistency_parser.add_argument(
+        '--component', required=True, help='Name of the component')
+    check_placeholder_consistency_parser.add_argument(
+        '--locale', required=True, help='Name of the locale')
+    check_placeholder_consistency_parser.add_argument(
+        '--zanata-po-path', required=True, help='Path to the zanata po file')
+    check_placeholder_consistency_parser.add_argument(
+        '--weblate-po-path', required=True, help='Path to weblate po')
+    check_placeholder_consistency_parser.add_argument(
+        '--result-json', required=False,
+        help='Path to result JSON Lines log (append-only)')
+    # Check sentence count command
+    check_sentence_count_parser = subparser.add_parser(
+        'check-sentence-count', help='Check the sentence count of the translation')
+    check_sentence_count_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    check_sentence_count_parser.add_argument(
+        '--category', required=True, help='Name of the category')
+    check_sentence_count_parser.add_argument(
+        '--component', required=True, help='Name of the component')
+    check_sentence_count_parser.add_argument(
+        '--locale', required=True, help='Name of the locale')
+    check_sentence_count_parser.add_argument(
+        '--zanata-po-path', required=True, help='Path to the zanata po file')
+    check_sentence_count_parser.add_argument(
+        '--weblate-po-path', required=True, help='Path to weblate po')
+    check_sentence_count_parser.add_argument(
+        '--result-json', required=False,
+        help='Path to result JSON Lines log (append-only)')
+    # Check sentence detail command
+    check_sentence_detail_parser = subparser.add_parser(
+        'check-sentence-detail',
+        help='Check the sentence detail of the translation')
+    check_sentence_detail_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    check_sentence_detail_parser.add_argument(
+        '--category', required=True, help='Name of the category')
+    check_sentence_detail_parser.add_argument(
+        '--component', required=True, help='Name of the component')
+    check_sentence_detail_parser.add_argument(
+        '--locale', required=True, help='Name of the locale')
+    check_sentence_detail_parser.add_argument(
+        '--zanata-po-path', required=True, help='Path to zanata po')
+    check_sentence_detail_parser.add_argument(
+        '--weblate-po-path', required=True, help='Path to weblate po')
+    check_sentence_detail_parser.add_argument(
+        '--result-json', required=False,
+        help='Path to result JSON Lines log (append-only)')
+    # Check PO format command
+    check_po_format_parser = subparser.add_parser(
+        'check-po-format',
+        help='Check the weblate PO file is valid gettext format '
+             '(msgfmt --check)')
+    check_po_format_parser.add_argument(
+        '--project', required=True, help='Name of the project')
+    check_po_format_parser.add_argument(
+        '--category', required=True, help='Name of the category')
+    check_po_format_parser.add_argument(
+        '--component', required=True, help='Name of the component')
+    check_po_format_parser.add_argument(
+        '--locale', required=True, help='Name of the locale')
+    check_po_format_parser.add_argument(
+        '--weblate-po-path', required=True, help='Path to weblate po')
+    check_po_format_parser.add_argument(
+        '--result-json', required=False,
+        help='Path to result JSON Lines log (append-only)')
+    return parser
+
+
+def main():
+    """Main entry point for the script."""
+    try:
+        config = WeblateConfig()
+
+        parser = setup_argument_parser()
+        args = parser.parse_args()
+
+        if not args.command:
+            parser.print_help()
+            sys.exit(1)
+
+        # Get result JSON path from args if available
+        result_json_path = getattr(args, 'result_json', None)
+        utils = WeblateUtils(config, result_json_path)
+
+        if args.command == 'create-project':
+            utils.create_project(args.project)
+        elif args.command == 'create-category':
+            utils.create_category(args.project, args.category)
+        elif args.command == 'create-component':
+            utils.create_component(
+                args.project, args.category, args.component, args.pot_path)
+        elif args.command == 'create-glossary':
+            utils.create_glossary(args.project)
+        elif args.command == 'create-translation':
+            utils.create_translation(
+                args.project, args.category, args.component, args.locale)
+        elif args.command == 'upload-po-file':
+            utils.upload_po_file(
+                args.project, args.category, args.component, args.locale,
+                args.po_path)
+        elif args.command == 'download-translation-file':
+            utils.download_translation_file(
+                args.project, args.po_path)
+        elif args.command == 'check-translation-existence':
+            passed = utils.check_translation_existence(
+                args.project, args.category, args.component, args.locale,
+                args.zanata_po_path, args.weblate_po_path)
+            if not passed:
+                sys.exit(1)
+        elif args.command == 'check-fuzzy-untranslated':
+            passed = utils.check_fuzzy_untranslated(
+                args.project, args.category, args.component, args.locale,
+                args.zanata_po_path, args.weblate_po_path)
+            if not passed:
+                sys.exit(1)
+        elif args.command == 'check-placeholder-consistency':
+            passed = utils.check_placeholder_consistency(
+                args.project, args.category, args.component, args.locale,
+                args.zanata_po_path, args.weblate_po_path)
+            if not passed:
+                sys.exit(1)
+        elif args.command == 'check-sentence-count':
+            passed = utils.check_sentence_count(
+                args.project, args.category, args.component, args.locale,
+                args.zanata_po_path, args.weblate_po_path)
+            if not passed:
+                sys.exit(1)
+
+        elif args.command == 'check-sentence-detail':
+            passed = utils.check_sentence_detail(
+                args.project, args.category, args.component, args.locale,
+                args.zanata_po_path, args.weblate_po_path)
+            if not passed:
+                sys.exit(1)
+        elif args.command == 'check-po-format':
+            passed = utils.check_po_format(
+                args.project, args.category, args.component, args.locale,
+                args.weblate_po_path)
+            if not passed:
+                sys.exit(1)
+        else:
+            parser.print_help()
+            sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] Failed to migrate: {e}")
+        traceback.print_exc()
+        # Without this, an uncaught exception anywhere in a subcommand
+        # (network error, missing file, corrupt PO, ...) is printed
+        # here and then main() returns normally, so the process still
+        # exits 0 - callers like test_accuracy/test.sh and
+        # migration_projects.sh that branch on exit code see a false
+        # success.
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
