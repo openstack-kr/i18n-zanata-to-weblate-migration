@@ -26,9 +26,9 @@ COMPONENTS=()
 
 SCRIPTSDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source $SCRIPTSDIR/01-setup-env/setup.sh
-source $SCRIPTSDIR/prepare_translations/get_zanata_xml.sh
-source $SCRIPTSDIR/prepare_translations/get_translations.sh
-source $SCRIPTSDIR/prepare_component_name/get_project_component_name.sh
+source $SCRIPTSDIR/02-prepare-translations/get_zanata_xml.sh
+source $SCRIPTSDIR/02-prepare-translations/get_translations.sh
+source $SCRIPTSDIR/03-prepare-component-name/get_project_component_name.sh
 source $SCRIPTSDIR/prepare_weblate_components/create_weblate_components.sh
 source $SCRIPTSDIR/test_accuracy/test.sh
 source $SCRIPTSDIR/common/pretty-printer.sh
