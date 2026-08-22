@@ -209,9 +209,10 @@ while IFS= read -r project || [ -n "$project" ]; do
                 elif [[ "$tree_content" == *"✓"* ]]; then
                     colorize "$GREEN" "$tree_content"
                 else
-                    # A plain section label (e.g. "▸ 컴포넌트 생성")
-                    # with no status symbol of its own - print as-is,
-                    # neither red/yellow/green nor forced green by
+                    # A plain informational line (e.g. the "다음 5단계
+                    # 진행 예정: ..." roadmap) with no status symbol of
+                    # its own - print as-is, neither red/yellow/green
+                    # nor forced green by
                     # default like a real success line would be.
                     echo "$tree_content"
                 fi

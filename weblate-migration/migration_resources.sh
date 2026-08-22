@@ -58,7 +58,16 @@ if [ -z "$WEBLATE_TOKEN" ] || [ "$WEBLATE_TOKEN" == "<weblate_token>" ]; then
 fi
 log_quiet "[INFO] WEBLATE_URL and WEBLATE_TOKEN are set"
 
+# Printed once so a long silent stretch during a slow stage (e.g. pip
+# installs, a big git clone) doesn't read as the run having hung -
+# without this, all a person sees between "⏳ 진행중" and the next
+# status line is nothing, with no way to tell "still working" from
+# "stuck". No status symbol of its own, so it renders uncolored (see
+# migration_projects.sh's tree dispatch).
+tree_line "다음 5단계 진행 예정: 환경설정 → 클론 → POT 생성 → 컴포넌트 생성 → 정확도 테스트"
+
 stage "Setup environment and prepare workspace"
+tree_line "⏳ 환경설정 진행중..."
 if ! setup_env_and_prepare_workspace "$PROJECT"; then
     tagged_colorize "$RED" "[ERROR] Failed to setup environment and prepare workspace: $FATAL_REASON"
     exit 1
@@ -67,6 +76,7 @@ endstage
 tree_line "✓ 환경설정 완료"
 
 stage "Clone $PROJECT project"
+tree_line "⏳ 클론 진행중..."
 if ! clone_project "$PROJECT" "$ZANATA_VERSION"; then
     tagged_colorize "$RED" "[ERROR] Failed to clone $PROJECT project: $FATAL_REASON"
     exit 1
@@ -86,6 +96,7 @@ tree_line "✓ 클론 완료"
 # arms; both are out of scope for this consistency-only change. See
 # phase-1 result doc for details.
 stage "Generate POT and export translations from Zanata"
+tree_line "⏳ POT 생성 진행중..."
 case $PROJECT in
     api-site)
         setup_manuals

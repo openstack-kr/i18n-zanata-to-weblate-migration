@@ -55,7 +55,7 @@ function create_weblate_components {
         exit 1
     fi
 
-    tree_line "▸ 컴포넌트 생성"
+    tree_line "⏳ 컴포넌트 생성 진행중..."
 
     # phase 2: creation and translations used to be two separate
     # passes over COMPONENTS (create every component first, then

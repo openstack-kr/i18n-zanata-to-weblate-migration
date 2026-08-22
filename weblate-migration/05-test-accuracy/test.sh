@@ -28,7 +28,7 @@ function test_accuracy {
     run_tagged_quiet unzip -o $PROJECT.zip
     rm -f $PROJECT.zip
 
-    tree_line "▸ 정확도 테스트"
+    tree_line "⏳ 정확도 테스트 진행중..."
 
     local total_components=${#COMPONENTS[@]}
     local component_index=0
