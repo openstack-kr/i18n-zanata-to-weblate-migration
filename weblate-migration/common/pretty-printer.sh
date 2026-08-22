@@ -65,6 +65,19 @@ fi
 CURRENT_COMPONENT="-"
 CURRENT_LOCALE="-"
 
+# Short human-readable reason for the most recent fatal failure in a
+# stage whose own progress/error detail is now quiet (setup, clone) -
+# set by the failing function right before it returns 1, and read by
+# migration_resources.sh's single visible error line for that stage,
+# so the console still says *why* even though the granular [INFO]/
+# [ERROR] trail is project.log-only. Without this, a bare
+# "[ERROR] Failed to setup environment..." on console wouldn't
+# distinguish "Python 3 missing" from "pip install failed" from
+# "zanata.ini not found" - all six of setup.sh's distinct failure
+# points, and clone_project's two, would look identical from the
+# console alone.
+FATAL_REASON=""
+
 # Print $1 tagged with the current component/locale context, for
 # bash-authored [INFO]-style lines (the plain-echo equivalent of
 # colorize() below, for lines that aren't success/failure/warning).
@@ -251,11 +264,13 @@ function extract_status_reason() {
     fi
 }
 
-# title is a description of the stage
+# title is a description of the stage. Quiet (project.log only, not
+# the live console) - the console now shows only the tree built from
+# tree_line() calls, not every stage's raw section header/separator.
 function stage() {
     local title=$1
     _STAGE_OPEN=1
-    log "# ${title}"
+    log_quiet "# ${title}"
 }
 
 function fail() {
@@ -265,12 +280,12 @@ function fail() {
 
 function debug() {
     local message=$1
-    log "[Debug] ${message}"
+    log_quiet "[Debug] ${message}"
 }
 
 function endstage() {
     _STAGE_OPEN=0
-    log "=========================================="
+    log_quiet "=========================================="
 }
 
 # Prints the closing separator for a stage left open by a process exit
@@ -280,7 +295,7 @@ function endstage() {
 function _stage_exit_trap() {
     if [ "$_STAGE_OPEN" -eq 1 ]; then
         _STAGE_OPEN=0
-        log "=========================================="
+        log_quiet "=========================================="
     fi
 }
 trap _stage_exit_trap EXIT

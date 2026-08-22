@@ -21,7 +21,7 @@ function pull_translation_files {
     # Pull all translation files(po, pot) from Zanata.
     # source file(*.pot) is in /pot directory.
     # translation file(*.po) is in /translations directory.
-    run_tagged zanata-cli -B -e pull --pull-type both \
+    run_tagged_quiet zanata-cli -B -e pull --pull-type both \
         --src-dir $WORK_DIR/projects/$PROJECT/pot \
         --trans-dir $WORK_DIR/projects/$PROJECT/translations
 }

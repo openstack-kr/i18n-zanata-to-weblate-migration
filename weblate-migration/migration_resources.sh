@@ -47,7 +47,7 @@ export GIT_TERMINAL_PROMPT=0
 
 # You should set WEBLATE_URL and WEBLATE_TOKEN
 # system environment variables.
-log "[INFO] Check variables"
+log_quiet "[INFO] Check variables"
 if [ -z "$WEBLATE_URL" ] || [ "$WEBLATE_URL" == "<weblate_url>" ]; then
     tagged_colorize "$RED" "[ERROR] WEBLATE_URL is not set"
     exit 1
@@ -56,21 +56,23 @@ if [ -z "$WEBLATE_TOKEN" ] || [ "$WEBLATE_TOKEN" == "<weblate_token>" ]; then
     tagged_colorize "$RED" "[ERROR] WEBLATE_TOKEN is not set"
     exit 1
 fi
-log "[INFO] WEBLATE_URL and WEBLATE_TOKEN are set"
+log_quiet "[INFO] WEBLATE_URL and WEBLATE_TOKEN are set"
 
 stage "Setup environment and prepare workspace"
 if ! setup_env_and_prepare_workspace "$PROJECT"; then
-    tagged_colorize "$RED" "[ERROR] Failed to setup environment and prepare workspace"
+    tagged_colorize "$RED" "[ERROR] Failed to setup environment and prepare workspace: $FATAL_REASON"
     exit 1
 fi
 endstage
+tree_line "✓ 환경설정 완료"
 
 stage "Clone $PROJECT project"
 if ! clone_project "$PROJECT" "$ZANATA_VERSION"; then
-    tagged_colorize "$RED" "[ERROR] Failed to clone $PROJECT project"
+    tagged_colorize "$RED" "[ERROR] Failed to clone $PROJECT project: $FATAL_REASON"
     exit 1
 fi
 endstage
+tree_line "✓ 클론 완료"
 
 # NOTE: POT generation (setup_*, which writes zanata.xml) and the Zanata
 # export (pull_translation_files) are kept in a single stage here rather
@@ -133,8 +135,9 @@ if [ ${#COMPONENTS[@]} -eq 0 ]; then
     fail "No components to process"
     exit 1
 fi
-log "[INFO] Components to migrate: ${COMPONENTS[@]}"
+log_quiet "[INFO] Components to migrate: ${COMPONENTS[*]}"
 endstage
+tree_line "✓ POT 생성 완료 (컴포넌트 ${#COMPONENTS[@]}개: ${COMPONENTS[*]})"
 
 stage "Create Weblate components"
 # Kept as a flag rather than exiting immediately: a partial failure
@@ -160,7 +163,7 @@ fi
 endstage
 
 # Clean
-log "[INFO] Clean up workspace directory"
+log_quiet "[INFO] Clean up workspace directory"
 # Not remove the project repository for reuse.
 # TODO: Create code for cleanup all projects.
 rm -rf $HOME/$WORKSPACE_NAME/projects/pot

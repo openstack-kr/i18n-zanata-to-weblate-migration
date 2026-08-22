@@ -17,20 +17,22 @@ WORK_DIR="$HOME/$WORKSPACE_NAME"
 
 function create_python_venv() {
     if ! command -v python3 &> /dev/null; then
-        log "[ERROR] Python 3 is not installed"
+        log_quiet "[ERROR] Python 3 is not installed"
+        FATAL_REASON="Python 3 미설치"
         return 1
     fi
 
     # create venv
     if [ ! -d "$WORK_DIR/.venv" ]; then
-        run_tagged python3 -m venv "$WORK_DIR/.venv"
+        run_tagged_quiet python3 -m venv "$WORK_DIR/.venv"
         if [ $? -ne 0 ]; then
-            log "[ERROR] Failed to create virtual environment"
+            log_quiet "[ERROR] Failed to create virtual environment"
+            FATAL_REASON="virtualenv 생성 실패"
             return 1
         fi
     fi
 
-    log "[INFO] Virtual environment created"
+    log_quiet "[INFO] Virtual environment created"
     return 0
 }
 
@@ -39,19 +41,21 @@ function install_dependencies() {
 
     cd "$SCRIPTSDIR/01-setup-env"
     # Install python dependencies
-    run_tagged pip3 install -r requirements.txt
+    run_tagged_quiet pip3 install -r requirements.txt
     if [ $? -ne 0 ]; then
-        log "[ERROR] Failed to install requirements.txt in venv."
+        log_quiet "[ERROR] Failed to install requirements.txt in venv."
+        FATAL_REASON="pip install 실패 (requirements.txt)"
         return 1
     fi
 
     # Install dependencies with bindep
     bindep_packages=$("$WORK_DIR/.venv/bin/bindep" -b -f bindep.txt 2>/dev/null)
     if [ -n "$bindep_packages" ]; then
-        log "[INFO] Installing system dependencies with bindep: $bindep_packages"
-        run_tagged sudo apt install -y $bindep_packages
+        log_quiet "[INFO] Installing system dependencies with bindep: $bindep_packages"
+        run_tagged_quiet sudo apt install -y $bindep_packages
         if [ $? -ne 0 ]; then
-            log "[ERROR] Failed to install system dependencies with bindep"
+            log_quiet "[ERROR] Failed to install system dependencies with bindep"
+            FATAL_REASON="bindep 시스템 패키지 설치 실패"
             return 1
         fi
     fi
@@ -62,43 +66,45 @@ function install_dependencies() {
 function check_zanata_cli() {
     # Check zanata-cli is installed
     if ! command -v zanata-cli &> /dev/null; then
-        log "[ERROR] zanata-cli is not installed"
+        log_quiet "[ERROR] zanata-cli is not installed"
+        FATAL_REASON="zanata-cli 미설치"
         return 1
     fi
 
     # Check zanata.ini file exists
     if [ ! -f "$HOME/.config/zanata.ini" ]; then
-        log "[ERROR] zanata.ini is not found"
+        log_quiet "[ERROR] zanata.ini is not found"
+        FATAL_REASON="zanata.ini 파일 없음"
         return 1
     fi
-    log "[INFO] zanata-cli is installed and zanata.ini file exists"
+    log_quiet "[INFO] zanata-cli is installed and zanata.ini file exists"
     return 0
 }
 
 function setup_env() {
     if ! prepare_workspace; then
-        log "[ERROR] Failed to prepare workspace."
+        log_quiet "[ERROR] Failed to prepare workspace."
         return 1
     fi
 
     if ! create_python_venv; then
-        log "[ERROR] Failed to create python venv"
+        log_quiet "[ERROR] Failed to create python venv"
         return 1
     fi
 
     if ! install_dependencies; then
-        log "[ERROR] Failed to install dependencies."
-        log "[ERROR] Please check bindep.txt and requirements.txt"
+        log_quiet "[ERROR] Failed to install dependencies."
+        log_quiet "[ERROR] Please check bindep.txt and requirements.txt"
         return 1
     fi
 
     if ! check_zanata_cli; then
-        log "[ERROR] Failed to check zanata-cli."
-        log "[ERROR] Please check if zanata-cli is installed and zanata.ini file exists."
+        log_quiet "[ERROR] Failed to check zanata-cli."
+        log_quiet "[ERROR] Please check if zanata-cli is installed and zanata.ini file exists."
         return 1
     fi
 
-    log "[INFO] Environment setup successfully"
+    log_quiet "[INFO] Environment setup successfully"
     return 0
 }
 
@@ -106,7 +112,8 @@ function prepare_workspace() {
     # Create workspace directory
     if [ ! -d "$WORK_DIR" ]; then
         if ! mkdir -p "$WORK_DIR"; then
-            log "[ERROR] Failed to create $WORKSPACE_NAME directory"
+            log_quiet "[ERROR] Failed to create $WORKSPACE_NAME directory"
+            FATAL_REASON="workspace 디렉터리 생성 실패"
             return 1
         fi
     fi
@@ -114,12 +121,13 @@ function prepare_workspace() {
     # Create projects directory
     if [ ! -d "$WORK_DIR/projects" ]; then
         if ! mkdir -p "$WORK_DIR/projects"; then
-            log "[ERROR] Failed to create projects directory"
+            log_quiet "[ERROR] Failed to create projects directory"
+            FATAL_REASON="projects 디렉터리 생성 실패"
             return 1
         fi
     fi
 
-    log "[INFO] Workspace directory created successfully"
+    log_quiet "[INFO] Workspace directory created successfully"
     return 0
 
 }
@@ -135,13 +143,13 @@ function prepare_project_workspace() {
     # Create pot directory
     if [ ! -d "$WORK_DIR/projects/$project/pot" ]; then
         mkdir -p $WORK_DIR/projects/$project/pot
-        log "[INFO] Pot directory created successfully"
+        log_quiet "[INFO] Pot directory created successfully"
     fi
 
     # Create translations directory
     if [ ! -d "$WORK_DIR/projects/$project/translations" ]; then
         mkdir -p $WORK_DIR/projects/$project/translations
-        log "[INFO] Translations directory created successfully"
+        log_quiet "[INFO] Translations directory created successfully"
     fi
 
     return 0
@@ -151,16 +159,16 @@ function setup_env_and_prepare_workspace() {
     local project=$1
 
     # Create a virtual environment and install system dependencies
-    log "[INFO] Setup the virtual environment and install system dependencies"
+    log_quiet "[INFO] Setup the virtual environment and install system dependencies"
     if ! setup_env; then
-        log "[ERROR] Failed to setup environment"
+        log_quiet "[ERROR] Failed to setup environment"
         return 1
     fi
 
     # Prepare workspace folders for migration tasks
-    log "[INFO] Prepare workspace folders"
+    log_quiet "[INFO] Prepare workspace folders"
     if ! prepare_workspace; then
-        log "[ERROR] Failed to prepare workspace"
+        log_quiet "[ERROR] Failed to prepare workspace"
         return 1
     fi
 

@@ -34,12 +34,28 @@ function create_weblate_components {
     CURRENT_COMPONENT="-"
     CURRENT_LOCALE="-"
 
-    # Create project
-    run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-project --project $PROJECT || exit 1
+    # Create project. Quiet (detail only in project.log) with an
+    # explicit visible error on failure - these three calls exit the
+    # whole process directly (not `return 1`), so migration_resources.sh
+    # never gets a chance to print its own catch-all error for them;
+    # unlike the per-component/locale steps below, a bare `|| exit 1`
+    # here would leave a failure with zero visible console output.
+    if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py create-project --project $PROJECT; then
+        tagged_colorize "$RED" "[ERROR] Failed to create Weblate project: $PROJECT"
+        exit 1
+    fi
     # Create global glossary for the project
-    run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-glossary --project $PROJECT || exit 1
+    if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py create-glossary --project $PROJECT; then
+        tagged_colorize "$RED" "[ERROR] Failed to create glossary for project: $PROJECT"
+        exit 1
+    fi
     # Create category with the branch name
-    run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-category --project $PROJECT --category $ZANATA_VERSION || exit 1
+    if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py create-category --project $PROJECT --category $ZANATA_VERSION; then
+        tagged_colorize "$RED" "[ERROR] Failed to create category: $ZANATA_VERSION for project: $PROJECT"
+        exit 1
+    fi
+
+    tree_line "▸ 컴포넌트 생성"
 
     # phase 2: creation and translations used to be two separate
     # passes over COMPONENTS (create every component first, then
@@ -134,11 +150,25 @@ function create_weblate_components {
             CURRENT_LOCALE="-"
         done
 
+        # "0/0" would otherwise render as a plain ✓ - true in the
+        # narrow sense (nothing failed) but easy to misread as a real
+        # success when it actually means no translation files were
+        # found for this component at all. Use a neutral, uncolored
+        # symbol (see migration_projects.sh's tree dispatch - only
+        # lines containing ✗/⏳/✓ get colored) plus an explicit note
+        # instead, so a genuinely empty component doesn't blend into a
+        # row of real ✓ passes.
         local component_symbol="✓"
-        if [ "${#failed_locale_lines[@]}" -gt 0 ]; then
+        if [ "$total_locales" -eq 0 ]; then
+            component_symbol="○"
+        elif [ "${#failed_locale_lines[@]}" -gt 0 ]; then
             component_symbol="✗"
         fi
-        tree_line "$(printf '%s %s %-28s %d/%d' "$component_connector" "$component_symbol" "$component" "$success_count" "$total_locales")"
+        if [ "$total_locales" -eq 0 ]; then
+            tree_line "$(printf '%s %s %-28s (번역 파일 없음)' "$component_connector" "$component_symbol" "$component")"
+        else
+            tree_line "$(printf '%s %s %-28s %d/%d' "$component_connector" "$component_symbol" "$component" "$success_count" "$total_locales")"
+        fi
 
         local failed_count=${#failed_locale_lines[@]}
         local locale_index=0

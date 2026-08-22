@@ -16,41 +16,56 @@ function test_accuracy {
     CURRENT_LOCALE="-"
 
     if [ ! -d "$TEST_DIR" ]; then
-        log "[INFO] TEST_DIR does not exist. Create new one."
+        log_quiet "[INFO] TEST_DIR does not exist. Create new one."
         mkdir -p $TEST_DIR
     fi
 
     cd $TEST_DIR
     # Download translation file from Weblate
-    run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py download-translation-file \
+    run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py download-translation-file \
         --project $PROJECT \
         --po-path $TEST_DIR/$PROJECT.zip
-    run_tagged unzip -o $PROJECT.zip
+    run_tagged_quiet unzip -o $PROJECT.zip
     rm -f $PROJECT.zip
+
+    tree_line "▸ 정확도 테스트"
+
+    local total_components=${#COMPONENTS[@]}
+    local component_index=0
 
     for component in "${COMPONENTS[@]}"; do
         CURRENT_COMPONENT="$component"
-        log ""
-        log "============================================================"
-        log " Target: $PROJECT / $ZANATA_VERSION / $component"
-        log "============================================================"
+        component_index=$((component_index + 1))
+        local component_connector="├─"
+        if [ "$component_index" -eq "$total_components" ]; then
+            component_connector="└─"
+        fi
+        local child_prefix="│  "
+        if [ "$component_connector" == "└─" ]; then
+            child_prefix="   "
+        fi
 
         # Get translation path list as an array
         local translation_path_array=($(get_translation_path_list $component))
+        local total_locales=${#translation_path_array[@]}
+        local success_count=0
+        # One rendered "<locale>  <failed step>  <status reason>" entry
+        # per failed locale, printed as this component's tree children
+        # once the loop below finishes - mirrors
+        # create_weblate_components.sh's failed_locale_lines.
+        local failed_locale_lines=()
 
         for translation_path in "${translation_path_array[@]}"; do
             local locale=$(extract_locale_from_path $translation_path)
             CURRENT_LOCALE="$locale"
-            log ""
-            log "[INFO] Testing locale: $locale"
 
             # the directory name did not support .,
             # so we need to replace . with -
             local version_dir=${ZANATA_VERSION//./-}
             local weblate_po_path=$(get_po_path $component $locale $TEST_DIR/$PROJECT/$version_dir true)
 
-            log "[INFO] Step 1/6: Check the component/locale existence..."
-            if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py check-translation-existence \
+            log_quiet "[INFO] Step 1/6: Check the component/locale existence..."
+            if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py check-translation-existence \
                 --project $PROJECT \
                 --category $ZANATA_VERSION \
                 --component $component \
@@ -59,8 +74,8 @@ function test_accuracy {
                 --weblate-po-path $weblate_po_path \
                 --result-json $RESULT_JSON
             then
-                log "[ERROR] Component/locale does not exist: $PROJECT, $ZANATA_VERSION, $component, $locale, $translation_path"
                 had_failure=1
+                failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "existence" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
                 continue
             fi
@@ -69,8 +84,8 @@ function test_accuracy {
             # outright on any translated-count difference) so this
             # classification - fuzzy re-marking vs possible real loss
             # - is always recorded to help triage that failure.
-            log "[INFO] Step 2/6: Check fuzzy/untranslated counts..."
-            if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py check-fuzzy-untranslated \
+            log_quiet "[INFO] Step 2/6: Check fuzzy/untranslated counts..."
+            if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py check-fuzzy-untranslated \
                 --project $PROJECT \
                 --category $ZANATA_VERSION \
                 --component $component \
@@ -79,8 +94,8 @@ function test_accuracy {
                 --weblate-po-path $weblate_po_path \
                 --result-json $RESULT_JSON
             then
-                log "[ERROR] Untranslated count increased (possible translation loss): $PROJECT, $ZANATA_VERSION, $component, $locale, $translation_path"
                 had_failure=1
+                failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "fuzzy-untranslated" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
                 continue
             fi
@@ -89,8 +104,8 @@ function test_accuracy {
             # the batch on the first content difference) so a
             # placeholder regression is always classified and recorded
             # even if those later checks fail on the same entries.
-            log "[INFO] Step 3/6: Check placeholder consistency..."
-            if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py check-placeholder-consistency \
+            log_quiet "[INFO] Step 3/6: Check placeholder consistency..."
+            if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py check-placeholder-consistency \
                 --project $PROJECT \
                 --category $ZANATA_VERSION \
                 --component $component \
@@ -99,14 +114,14 @@ function test_accuracy {
                 --weblate-po-path $weblate_po_path \
                 --result-json $RESULT_JSON
             then
-                log "[ERROR] Placeholder regression detected: $PROJECT, $ZANATA_VERSION, $component, $locale, $translation_path"
                 had_failure=1
+                failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "placeholder" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
                 continue
             fi
 
-            log "[INFO] Step 4/6: Check the sentence count..."
-            if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py check-sentence-count \
+            log_quiet "[INFO] Step 4/6: Check the sentence count..."
+            if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py check-sentence-count \
                 --project $PROJECT \
                 --category $ZANATA_VERSION \
                 --component $component \
@@ -115,14 +130,14 @@ function test_accuracy {
                 --weblate-po-path $weblate_po_path \
                 --result-json $RESULT_JSON
             then
-                log "[ERROR] Check the sentence failed: $PROJECT, $ZANATA_VERSION, $component, $locale, $translation_path"
                 had_failure=1
+                failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "sentence-count" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
                 continue
             fi
 
-            log "[INFO] Step 5/6: Check the sentence detail..."
-            if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py check-sentence-detail \
+            log_quiet "[INFO] Step 5/6: Check the sentence detail..."
+            if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py check-sentence-detail \
                 --project $PROJECT \
                 --category $ZANATA_VERSION \
                 --component $component \
@@ -131,14 +146,14 @@ function test_accuracy {
                 --weblate-po-path $weblate_po_path \
                 --result-json $RESULT_JSON
             then
-                log "[ERROR] Check the sentence detail failed: $PROJECT, $ZANATA_VERSION, $component, $locale, $translation_path"
                 had_failure=1
+                failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "sentence-detail" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
                 continue
             fi
 
-            log "[INFO] Step 6/6: Check the PO format (msgfmt --check)..."
-            if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py check-po-format \
+            log_quiet "[INFO] Step 6/6: Check the PO format (msgfmt --check)..."
+            if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py check-po-format \
                 --project $PROJECT \
                 --category $ZANATA_VERSION \
                 --component $component \
@@ -146,19 +161,42 @@ function test_accuracy {
                 --weblate-po-path $weblate_po_path \
                 --result-json $RESULT_JSON
             then
-                log "[ERROR] PO format check failed: $PROJECT, $ZANATA_VERSION, $component, $locale, $weblate_po_path"
                 had_failure=1
+                failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "po-format" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
                 continue
             fi
 
+            success_count=$((success_count + 1))
             CURRENT_LOCALE="-"
         done
-        log "[INFO] ✓ Component '$component' completed - tested ${#translation_path_array[@]} locales"
+
+        # See create_weblate_components.sh's identical check for why
+        # "0/0" gets its own neutral symbol instead of a plain ✓.
+        local component_symbol="✓"
+        if [ "$total_locales" -eq 0 ]; then
+            component_symbol="○"
+        elif [ "${#failed_locale_lines[@]}" -gt 0 ]; then
+            component_symbol="✗"
+        fi
+        if [ "$total_locales" -eq 0 ]; then
+            tree_line "$(printf '%s %s %-28s (테스트할 번역 파일 없음)' "$component_connector" "$component_symbol" "$component")"
+        else
+            tree_line "$(printf '%s %s %-28s %d/%d' "$component_connector" "$component_symbol" "$component" "$success_count" "$total_locales")"
+        fi
+
+        local failed_count=${#failed_locale_lines[@]}
+        local locale_index=0
+        for entry in "${failed_locale_lines[@]}"; do
+            locale_index=$((locale_index + 1))
+            local locale_connector="├─"
+            if [ "$locale_index" -eq "$failed_count" ]; then
+                locale_connector="└─"
+            fi
+            tree_line "$(printf '%s%s ✗ %s' "$child_prefix" "$locale_connector" "$entry")"
+        done
         CURRENT_COMPONENT="-"
     done
-
-    log ""
 
     cd - > /dev/null
 

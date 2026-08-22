@@ -190,23 +190,30 @@ while IFS= read -r project || [ -n "$project" ]; do
         # exit code of MIGRATION_SCRIPT, and must be read immediately
         # after the pipeline, before any other command runs.
         "$MIGRATION_SCRIPT" "$project" "$version" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
-            # Phase 2: create_weblate_components.sh now tags each line
-            # with one of two markers instead of always being both
-            # logged and echoed the same way - see TREE_MARKER/
-            # QUIET_MARKER in common/pretty-printer.sh for the full
-            # protocol. Lines from every other stage (clone, POT
-            # generation, 05-test-accuracy, migration_resources.sh's
-            # own [INFO]/[ERROR] lines) carry neither marker and fall
-            # through to the phase-1 behavior unchanged: tagged,
-            # logged, and echoed.
+            # create_weblate_components.sh/test.sh/every other stage now
+            # tag each line with one of two markers instead of always
+            # being both logged and echoed the same way - see
+            # TREE_MARKER/QUIET_MARKER in common/pretty-printer.sh for
+            # the full protocol. Lines carrying neither marker (there
+            # should be none left in normal operation - every stage now
+            # routes through log_quiet()/run_tagged_quiet()/tree_line(),
+            # or a still-visible fatal-error tagged_colorize()) fall
+            # through to the phase-1 behavior unchanged: tagged, logged,
+            # and echoed - a safety net, not the expected path.
             if [[ "$line" == "${TREE_MARKER}"* ]]; then
                 tree_content="${line#$TREE_MARKER}"
                 if [[ "$tree_content" == *"✗"* ]]; then
                     colorize "$RED" "$tree_content"
                 elif [[ "$tree_content" == *"⏳"* ]]; then
                     colorize "$YELLOW" "$tree_content"
-                else
+                elif [[ "$tree_content" == *"✓"* ]]; then
                     colorize "$GREEN" "$tree_content"
+                else
+                    # A plain section label (e.g. "▸ 컴포넌트 생성")
+                    # with no status symbol of its own - print as-is,
+                    # neither red/yellow/green nor forced green by
+                    # default like a real success line would be.
+                    echo "$tree_content"
                 fi
                 continue
             fi

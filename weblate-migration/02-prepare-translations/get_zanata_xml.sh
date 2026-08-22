@@ -20,28 +20,30 @@ function clone_project() {
 
     cd $WORK_DIR/projects/$PROJECT
     if [ ! -d "$WORK_DIR/$PROJECT" ]; then
-        run_tagged git clone https://opendev.org/openstack/$PROJECT
+        run_tagged_quiet git clone https://opendev.org/openstack/$PROJECT
 
         # If the cloned project directory is empty, remove and get errors.
         if [ -z "$(ls -A $CLONED_PROJECT_DIR)" ]; then
             rm -rf $CLONED_PROJECT_DIR
-            log "[ERROR] Failed to clone $PROJECT project"
+            log_quiet "[ERROR] Failed to clone $PROJECT project"
+            FATAL_REASON="git clone 실패 ($PROJECT)"
             return 1
         else
-            log "[INFO] $PROJECT: Cloned successfully"
+            log_quiet "[INFO] $PROJECT: Cloned successfully"
         fi
     fi
 
     # If ZANATA_VERSION is master, we don't need to checkout.
     if [ "$BRANCH_NAME" != "master" ]; then
         cd $CLONED_PROJECT_DIR
-        if ! run_tagged git checkout $BRANCH_NAME; then
-            log "[ERROR] Failed to checkout $BRANCH_NAME version"
+        if ! run_tagged_quiet git checkout $BRANCH_NAME; then
+            log_quiet "[ERROR] Failed to checkout $BRANCH_NAME version"
+            FATAL_REASON="git checkout 실패 ($BRANCH_NAME)"
             return 1
         fi
         cd - > /dev/null
     fi
-    log "[INFO] $PROJECT: Checked out $BRANCH_NAME version"
+    log_quiet "[INFO] $PROJECT: Checked out $BRANCH_NAME version"
     cd - > /dev/null
 
     return 0
@@ -57,15 +59,15 @@ function setup_project {
     # and .venv
     local exclude='.*/**'
 
-    if ! run_tagged python3 $SCRIPTSDIR/02-prepare-translations/create_zanata_xml.py \
+    if ! run_tagged_quiet python3 $SCRIPTSDIR/02-prepare-translations/create_zanata_xml.py \
         -p $PROJECT -v $ZANATA_VERSION --srcdir . --txdir . \
         -r '**/*.pot' '{path}/{locale_with_underscore}/LC_MESSAGES/{filename}.po' \
         -e "$exclude" -f $CLONED_PROJECT_DIR/zanata.xml; then
 
-        log "[ERROR] Failed to create zanata.xml for $PROJECT"
+        log "[ERROR] Failed to create zanata.xml for $PROJECT: $(extract_status_reason "$LAST_TAGGED_LINE")"
         exit 1
     fi
-    log "[INFO] zanata.xml created successfully for $PROJECT"
+    log_quiet "[INFO] zanata.xml created successfully for $PROJECT"
 }
 
 # Setup project manuals projects (api-site, openstack-manuals,
@@ -126,53 +128,53 @@ function setup_manuals {
             releasenotes/source/locale/{locale_with_underscore}/LC_MESSAGES/releasenotes.po"
     fi
 
-    if ! run_tagged python3 $SCRIPTSDIR/02-prepare-translations/create_zanata_xml.py \
+    if ! run_tagged_quiet python3 $SCRIPTSDIR/02-prepare-translations/create_zanata_xml.py \
         -p $PROJECT -v $ZANATA_VERSION --srcdir . --txdir . \
         $ZANATA_RULES -e "$EXCLUDE" \
         -f $WORK_DIR/projects/$PROJECT/$PROJECT/zanata.xml; then
-        log "[ERROR] Failed to create zanata.xml for $PROJECT"
+        log "[ERROR] Failed to create zanata.xml for $PROJECT: $(extract_status_reason "$LAST_TAGGED_LINE")"
         exit 1
     fi
-    log "[INFO] zanata.xml created successfully for $PROJECT"
+    log_quiet "[INFO] zanata.xml created successfully for $PROJECT"
 }
 
 # Setup a training-guides project for Zanata
 function setup_training_guides {
-    if ! run_tagged python3 $SCRIPTSDIR/02-prepare-translations/create_zanata_xml.py \
+    if ! run_tagged_quiet python3 $SCRIPTSDIR/02-prepare-translations/create_zanata_xml.py \
         -p $PROJECT -v $ZANATA_VERSION \
         --srcdir doc/upstream-training/source/locale \
         --txdir doc/upstream-training/source/locale \
         -f $CLONED_PROJECT_DIR/zanata.xml; then
-        log "[ERROR] Failed to create zanata.xml for $PROJECT"
+        log "[ERROR] Failed to create zanata.xml for $PROJECT: $(extract_status_reason "$LAST_TAGGED_LINE")"
         exit 1
     fi
-    log "[INFO] zanata.xml created successfully for $PROJECT"
+    log_quiet "[INFO] zanata.xml created successfully for $PROJECT"
 }
 
 # Setup a i18n project for Zanata
 function setup_i18n {
-    if ! run_tagged python3 $SCRIPTSDIR/02-prepare-translations/create_zanata_xml.py \
+    if ! run_tagged_quiet python3 $SCRIPTSDIR/02-prepare-translations/create_zanata_xml.py \
         -p $PROJECT -v $ZANATA_VERSION \
         --srcdir doc/source/locale \
         --txdir doc/source/locale \
         -f $CLONED_PROJECT_DIR/zanata.xml; then
-        log "[ERROR] Failed to create zanata.xml for $PROJECT"
+        log "[ERROR] Failed to create zanata.xml for $PROJECT: $(extract_status_reason "$LAST_TAGGED_LINE")"
         exit 1
     fi
-    log "[INFO] zanata.xml created successfully for $PROJECT"
+    log_quiet "[INFO] zanata.xml created successfully for $PROJECT"
 }
 
 # Setup a ReactJS project for Zanata
 function setup_reactjs_project {
     local exclude='node_modules/**'
 
-    if ! run_tagged python3 $SCRIPTSDIR/02-prepare-translations/create_zanata_xml.py \
+    if ! run_tagged_quiet python3 $SCRIPTSDIR/02-prepare-translations/create_zanata_xml.py \
         -p $PROJECT -v $ZANATA_VERSION --srcdir . --txdir . \
         -r '**/*.pot' '{path}/{locale}.po' \
         -e "$exclude" \
         -f $CLONED_PROJECT_DIR/zanata.xml; then
-        log "[ERROR] Failed to create zanata.xml for $PROJECT"
+        log "[ERROR] Failed to create zanata.xml for $PROJECT: $(extract_status_reason "$LAST_TAGGED_LINE")"
         exit 1
     fi
-    log "[INFO] zanata.xml created successfully for $PROJECT"
+    log_quiet "[INFO] zanata.xml created successfully for $PROJECT"
 }
