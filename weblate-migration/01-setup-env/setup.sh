@@ -23,7 +23,7 @@ function create_python_venv() {
 
     # create venv
     if [ ! -d "$WORK_DIR/.venv" ]; then
-        python3 -m venv "$WORK_DIR/.venv" 2>&1
+        run_tagged python3 -m venv "$WORK_DIR/.venv"
         if [ $? -ne 0 ]; then
             log "[ERROR] Failed to create virtual environment"
             return 1
@@ -39,7 +39,7 @@ function install_dependencies() {
 
     cd "$SCRIPTSDIR/01-setup-env"
     # Install python dependencies
-    pip3 install -r requirements.txt
+    run_tagged pip3 install -r requirements.txt
     if [ $? -ne 0 ]; then
         log "[ERROR] Failed to install requirements.txt in venv."
         return 1
@@ -49,7 +49,7 @@ function install_dependencies() {
     bindep_packages=$("$WORK_DIR/.venv/bin/bindep" -b -f bindep.txt 2>/dev/null)
     if [ -n "$bindep_packages" ]; then
         log "[INFO] Installing system dependencies with bindep: $bindep_packages"
-        sudo apt install -y $bindep_packages
+        run_tagged sudo apt install -y $bindep_packages
         if [ $? -ne 0 ]; then
             log "[ERROR] Failed to install system dependencies with bindep"
             return 1

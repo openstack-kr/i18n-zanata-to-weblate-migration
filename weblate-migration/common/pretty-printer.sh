@@ -255,7 +255,7 @@ function extract_status_reason() {
 function stage() {
     local title=$1
     _STAGE_OPEN=1
-    echo "# ${title}"
+    log "# ${title}"
 }
 
 function fail() {
@@ -265,12 +265,12 @@ function fail() {
 
 function debug() {
     local message=$1
-    echo "[Debug] ${message}"
+    log "[Debug] ${message}"
 }
 
 function endstage() {
     _STAGE_OPEN=0
-    echo "=========================================="
+    log "=========================================="
 }
 
 # Prints the closing separator for a stage left open by a process exit
@@ -280,7 +280,7 @@ function endstage() {
 function _stage_exit_trap() {
     if [ "$_STAGE_OPEN" -eq 1 ]; then
         _STAGE_OPEN=0
-        echo "=========================================="
+        log "=========================================="
     fi
 }
 trap _stage_exit_trap EXIT

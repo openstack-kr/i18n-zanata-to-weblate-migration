@@ -25,15 +25,15 @@ function test_accuracy {
     run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py download-translation-file \
         --project $PROJECT \
         --po-path $TEST_DIR/$PROJECT.zip
-    unzip -o $PROJECT.zip
+    run_tagged unzip -o $PROJECT.zip
     rm -f $PROJECT.zip
 
     for component in "${COMPONENTS[@]}"; do
         CURRENT_COMPONENT="$component"
-        echo ""
-        echo "============================================================"
-        echo " Target: $PROJECT / $ZANATA_VERSION / $component"
-        echo "============================================================"
+        log ""
+        log "============================================================"
+        log " Target: $PROJECT / $ZANATA_VERSION / $component"
+        log "============================================================"
 
         # Get translation path list as an array
         local translation_path_array=($(get_translation_path_list $component))
@@ -41,7 +41,7 @@ function test_accuracy {
         for translation_path in "${translation_path_array[@]}"; do
             local locale=$(extract_locale_from_path $translation_path)
             CURRENT_LOCALE="$locale"
-            echo ""
+            log ""
             log "[INFO] Testing locale: $locale"
 
             # the directory name did not support .,
@@ -158,7 +158,7 @@ function test_accuracy {
         CURRENT_COMPONENT="-"
     done
 
-    echo ""
+    log ""
 
     cd - > /dev/null
 
