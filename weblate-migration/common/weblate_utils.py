@@ -519,16 +519,15 @@ class WeblateUtils:
 
         return self._with_connection_retry(do_post, f"Failed to post: {url}")
 
-    def _post_with_retry(
+    def _retry_on_status(
         self,
-        url: str,
+        perform_request: Callable[[], requests.Response],
         success: Callable[[requests.Response], bool],
-        build_kwargs: Callable[[], dict],
         action: str,
         retry_count: int = 3,
         sleep_time: int = 15,
     ) -> requests.Response:
-        """POST with retry for transient failures
+        """Shared retry loop for a status-code-based transient failure
 
         Retries up to retry_count times when the response fails
         `success` but its status is retryable (see
@@ -536,23 +535,25 @@ class WeblateUtils:
         limited, or any non-4xx that still didn't count as success).
         A genuine 4xx rejection, or exhausting all retries, exits the
         process - callers rely on this instead of checking a return
-        value.
+        value. Shared by _post_with_retry (the create/upload POSTs)
+        and _get_with_retry (the existence-check GETs in
+        create_component/create_translation) so the retry/status
+        logic and log format only live in one place.
 
-        :param url: request URL
+        :param perform_request: no-arg callable that performs one
+            attempt and returns its Response - called fresh on every
+            attempt, so a caller whose request body is consumed on
+            send (e.g. a file-like POST body) can rebuild/re-seek it
+            each time
         :param success: predicate(response) -> True if this attempt
             should be treated as successful
-        :param build_kwargs: called fresh before every attempt to
-            build this attempt's `data`/`file` kwargs for `_post` -
-            needed because a file-like request body (e.g. a zip
-            buffer) is consumed once sent, so callers must rebuild or
-            re-seek it for each retry
         :param action: short label for this operation, used in log
             and error messages (e.g. "Create component")
         :returns: the successful response
         """
         assert retry_count >= 1, "retry_count must allow at least one attempt"
         for cnt in range(retry_count):
-            response = self._post(url=url, **build_kwargs())
+            response = perform_request()
 
             if success(response):
                 return response
@@ -574,6 +575,74 @@ class WeblateUtils:
         print(f"[ERROR] {action} failed after {retry_count} attempts "
               f"({response.status_code}): {response.text}")
         sys.exit(1)
+
+    def _post_with_retry(
+        self,
+        url: str,
+        success: Callable[[requests.Response], bool],
+        build_kwargs: Callable[[], dict],
+        action: str,
+        retry_count: int = 3,
+        sleep_time: int = 15,
+    ) -> requests.Response:
+        """POST with retry for transient failures
+
+        See _retry_on_status for the retry/status-code semantics.
+
+        :param url: request URL
+        :param success: predicate(response) -> True if this attempt
+            should be treated as successful
+        :param build_kwargs: called fresh before every attempt to
+            build this attempt's `data`/`file` kwargs for `_post` -
+            needed because a file-like request body (e.g. a zip
+            buffer) is consumed once sent, so callers must rebuild or
+            re-seek it for each retry
+        :param action: short label for this operation, used in log
+            and error messages (e.g. "Create component")
+        :returns: the successful response
+        """
+        return self._retry_on_status(
+            perform_request=lambda: self._post(url=url, **build_kwargs()),
+            success=success,
+            action=action,
+            retry_count=retry_count,
+            sleep_time=sleep_time,
+        )
+
+    def _get_with_retry(
+        self,
+        url: str,
+        success: Callable[[requests.Response], bool],
+        action: str,
+        retry_count: int = 3,
+        sleep_time: int = 15,
+    ) -> requests.Response:
+        """GET with retry for transient failures
+
+        See _retry_on_status for the retry/status-code semantics.
+        Used for the existence-check GET in create_component()/
+        create_translation(): a transient 5xx there is a normal
+        Response (not a RequestException, so _get()'s own
+        connection-level retry never sees it), and previously had no
+        retry at all - the first non-200/404 status exited the
+        process immediately.
+
+        :param url: request URL
+        :param success: predicate(response) -> True if this attempt
+            should be treated as successful (e.g. status in (200,
+            404), both meaningful terminal outcomes for an existence
+            check rather than failures)
+        :param action: short label for this operation, used in log
+            and error messages (e.g. "Check component existence")
+        :returns: the response from the successful attempt
+        """
+        return self._retry_on_status(
+            perform_request=lambda: self._get(url),
+            success=success,
+            action=action,
+            retry_count=retry_count,
+            sleep_time=sleep_time,
+        )
 
     def _build_category_list(self, project_name: str) -> dict:
         """Get category list for the project
@@ -732,15 +801,15 @@ class WeblateUtils:
                 f'{sanitize_slug(category_name)}%252F'
                 f'{sanitize_slug(component_name)}/')
         url = urljoin(self.base_url, path)
-        response = self._get(url)
+        response = self._get_with_retry(
+            url,
+            success=lambda r: r.status_code in (200, 404),
+            action='Check component existence',
+        )
 
         if response.status_code == 200:
             print("[INFO] Component already exists: ", component_name)
             return
-        if response.status_code != 404:
-            print("[ERROR] Failed to create component: ",
-                  json.dumps(response.json()))
-            sys.exit(1)
 
         print("[INFO] Component does not exist: ", component_name)
 
@@ -827,15 +896,15 @@ class WeblateUtils:
                 f'{sanitize_slug(component_name)}/'
                 f'{locale}/')
         url = urljoin(self.base_url, path)
-        response = self._get(url)
+        response = self._get_with_retry(
+            url,
+            success=lambda r: r.status_code in (200, 404),
+            action='Check translation existence',
+        )
 
         if response.status_code == 200:
             print("[INFO] Translation already exists: ", locale)
             return
-        if response.status_code != 404:
-            print("[ERROR] Failed to create translation: ",
-                  json.dumps(response.json()))
-            sys.exit(1)
 
         path = (f'components/{sanitize_slug(project_name)}/'
                 f'{sanitize_slug(category_name)}%252F'
