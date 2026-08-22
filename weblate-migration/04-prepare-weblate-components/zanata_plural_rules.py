@@ -161,7 +161,7 @@ ZANATA_LANG_RULES = {
         'plurals': 'nplurals=2; plural=(n != 1)'
     },
     'es': {
-        'region_code': ['es', 'ex_MX'],
+        'region_code': ['es', 'es_MX'],
         'plurals': 'nplurals=2; plural=(n != 1)'
     },
     'et': {
