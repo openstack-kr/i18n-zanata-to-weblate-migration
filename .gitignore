@@ -1,0 +1,6 @@
+__pycache__/
+
+# Custom settings
+logs/
+summary.tsv
+CLAUDE.md
