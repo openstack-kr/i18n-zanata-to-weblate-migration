@@ -53,6 +53,25 @@ else
     IS_TTY=0
 fi
 
+# Which (component, locale) the pipeline is currently working on, for
+# tagging every project.log/error.log line - not just the final
+# summary line a stage prints on failure - so a person can tell which
+# component/locale a line belongs to without scrolling up to the last
+# "Creating translation..." line. "-" means not yet known (e.g. before
+# create_weblate_components.sh's loops start). migration_projects.sh
+# adds the outer project/category fields separately; these two cover
+# the inner fields that only create_weblate_components.sh/test.sh
+# know. Set/reset by those two files' loops - see phase-1-log-tagging.md.
+CURRENT_COMPONENT="-"
+CURRENT_LOCALE="-"
+
+# Print $1 tagged with the current component/locale context, for
+# bash-authored [INFO]-style lines (the plain-echo equivalent of
+# colorize() below, for lines that aren't success/failure/warning).
+function log() {
+    echo "${CURRENT_COMPONENT} | ${CURRENT_LOCALE} | $1"
+}
+
 # Print $2, wrapped in the color code $1, only when stdout is a real
 # terminal (IS_TTY=1); otherwise print $2 unchanged. Use this for any
 # success/failure/warning line that might also be written to a log
@@ -60,6 +79,18 @@ fi
 # never let a colorized string reach a log file, since that leaves raw
 # ANSI escape bytes in it and breaks tools (e.g. grep on error.*.log)
 # and the README's `version | message` log format.
+#
+# Deliberately NOT tagged with CURRENT_COMPONENT/CURRENT_LOCALE here,
+# unlike log()/run_tagged() - migration_projects.sh sources this file
+# too and calls colorize() for two things that must stay untagged: its
+# own project/version-level success/failure summary (never had a
+# component/locale, and isn't written to project.log/error.log at
+# all), and re-coloring a $plain_line that migration_resources.sh's
+# process already tagged in full - tagging either here would add a
+# spurious second "- | - | " (migration_projects.sh never touches
+# CURRENT_COMPONENT/CURRENT_LOCALE, so they'd always read "-" there).
+# Call sites inside migration_resources.sh's own process that want the
+# tag use tagged_colorize() below instead.
 function colorize() {
     local color=$1
     local text=$2
@@ -68,6 +99,35 @@ function colorize() {
     else
         echo "${text}"
     fi
+}
+
+# colorize(), but tagged with the current component/locale context -
+# for success/failure/warning lines from within migration_resources.sh
+# and its sourced functions (e.g. create_weblate_components.sh),
+# mirroring log() above. Do not use this from migration_projects.sh -
+# see the note on colorize() above.
+function tagged_colorize() {
+    colorize "$1" "${CURRENT_COMPONENT} | ${CURRENT_LOCALE} | $2"
+}
+
+# Run $@, tagging every line of its combined stdout+stderr with the
+# current component/locale context, while still returning the
+# command's real exit code. A plain `cmd | while read ...` would lose
+# that - the pipeline's exit status is the *last* command's (the while
+# loop, always 0) - so PIPESTATUS[0] is read immediately after, same
+# technique migration_projects.sh uses for the same reason. Use this
+# for external commands (python3/git/zanata-cli) whose own stdout
+# isn't already routed through log()/colorize().
+#
+# The `|| [ -n "$line" ]` on the read is required: without it, a final
+# line with no trailing newline (read still fills $line but returns
+# non-zero) is silently dropped instead of tagged and printed - same
+# guard migration_projects.sh's own file-reading loops use below.
+function run_tagged() {
+    "$@" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
+        echo "${CURRENT_COMPONENT} | ${CURRENT_LOCALE} | ${line}"
+    done
+    return "${PIPESTATUS[0]}"
 }
 
 # title is a description of the stage
@@ -79,7 +139,7 @@ function stage() {
 
 function fail() {
     local message=$1
-    colorize "$RED" "[Failed] ${message}"
+    tagged_colorize "$RED" "[Failed] ${message}"
 }
 
 function debug() {

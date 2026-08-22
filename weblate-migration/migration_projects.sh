@@ -190,7 +190,7 @@ while IFS= read -r project || [ -n "$project" ]; do
         # exit code of MIGRATION_SCRIPT, and must be read immediately
         # after the pipeline, before any other command runs.
         "$MIGRATION_SCRIPT" "$project" "$version" 2>&1 | while IFS= read -r line; do
-            plain_line="$version | $line"
+            plain_line="$project | $version | $line"
             # Log file writes must always stay plain text - never
             # colorize this, or error.*.log/project.*.log end up with
             # raw ANSI escape bytes in them, which breaks grep and the
@@ -204,14 +204,20 @@ while IFS= read -r project || [ -n "$project" ]; do
             # run at a real terminal, because its stdout is always a
             # pipe in this context (see the IS_TTY comment on the
             # `source pretty-printer.sh` line above) - so it's safe to
-            # colorize purely by matching the tag text.
-            if [[ "$line" == \[ERROR\]* || "$line" == \[Failed\]* ]]; then
+            # colorize purely by matching the tag text. Since phase-1
+            # log tagging, every line from migration_resources.sh's
+            # log()/colorize()/run_tagged() (common/pretty-printer.sh)
+            # is prefixed "component | locale | ", so the [ERROR]/
+            # [Failed] tag itself no longer starts the line - match it
+            # right after that prefix's trailing " | " instead of
+            # anchoring at the start of the line.
+            if [[ "$line" == *" | [ERROR]"* || "$line" == *" | [Failed]"* ]]; then
                 colorize "$RED" "$plain_line"
             else
                 echo "$plain_line"
             fi
             # save the error line to the error log file
-            if [[ "$line" == \[ERROR\]* ]]; then
+            if [[ "$line" == *" | [ERROR]"* ]]; then
                 echo "$plain_line" >> "$ERROR_LOG"
             fi
         done

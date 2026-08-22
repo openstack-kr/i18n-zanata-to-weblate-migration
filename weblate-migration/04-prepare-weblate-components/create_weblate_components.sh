@@ -30,31 +30,43 @@ function create_weblate_components {
     WORKSPACE_DIR=$HOME/workspace/projects/$PROJECT/$WORKSPACE_NAME/test
     mkdir -p $WORKSPACE_DIR
 
+    # No component/locale is known yet for the project-level calls
+    # below - reset in case an earlier (project, version) run in the
+    # same process left these set (defensive; migration_resources.sh
+    # currently runs one (project, version) per process, but this
+    # keeps the function correct if that ever changes).
+    CURRENT_COMPONENT="-"
+    CURRENT_LOCALE="-"
+
     # Create project
-    python3 -u $SCRIPTSDIR/common/weblate_utils.py create-project --project $PROJECT || exit 1
+    run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-project --project $PROJECT || exit 1
     # Create global glossary for the project
-    python3 -u $SCRIPTSDIR/common/weblate_utils.py create-glossary --project $PROJECT || exit 1
+    run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-glossary --project $PROJECT || exit 1
     # Create category with the branch name
-    python3 -u $SCRIPTSDIR/common/weblate_utils.py create-category --project $PROJECT --category $ZANATA_VERSION || exit 1
+    run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-category --project $PROJECT --category $ZANATA_VERSION || exit 1
     # Create components with the pot file for Weblate component initialization.
     for component in ${COMPONENTS[@]}; do
+        CURRENT_COMPONENT="$component"
         pot_path=$(get_pot_path $component)
 
-        if ! python3 -u $SCRIPTSDIR/common/weblate_utils.py create-component \
+        if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-component \
                 --project $PROJECT \
                 --category $ZANATA_VERSION \
                 --component $component \
                 --pot-path $pot_path; then
-            colorize "$RED" "[ERROR] Failed to create component: $component - skipping this component"
+            tagged_colorize "$RED" "[ERROR] Failed to create component: $component - skipping this component"
             had_failure=1
             failed_components+=("$component")
             continue
         fi
     done
+    CURRENT_COMPONENT="-"
 
     for component in ${COMPONENTS[@]}; do
+        CURRENT_COMPONENT="$component"
+
         if [[ " ${failed_components[@]} " == *" $component "* ]]; then
-            colorize "$RED" "[ERROR] Skipping translations for $component - component creation failed earlier"
+            tagged_colorize "$RED" "[ERROR] Skipping translations for $component - component creation failed earlier"
             continue
         fi
 
@@ -62,42 +74,48 @@ function create_weblate_components {
 
         for translation_path in $translation_path_list; do
             locale=$(extract_locale_from_path $translation_path)
-            echo "[INFO] Creating translation, locale: $locale, component: $component"
+            CURRENT_LOCALE="$locale"
+            log "[INFO] Creating translation, locale: $locale, component: $component"
 
-            if ! python3 -u $SCRIPTSDIR/common/weblate_utils.py create-translation \
+            if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-translation \
                     --project $PROJECT \
                     --category $ZANATA_VERSION \
                     --component $component \
                     --locale $locale; then
-                colorize "$RED" "[ERROR] Failed to create translation: $component / $locale - skipping this locale"
+                tagged_colorize "$RED" "[ERROR] Failed to create translation: $component / $locale - skipping this locale"
                 had_failure=1
+                CURRENT_LOCALE="-"
                 continue
             fi
             sleep 10
 
-            echo "[INFO] Check plural forms..."
-            if ! python3 -u $SCRIPTSDIR/04-prepare-weblate-components/lang_plural_check.py $translation_path; then
-                colorize "$RED" "[ERROR] Plural form check failed: $component / $locale - skipping this locale"
+            log "[INFO] Check plural forms..."
+            if ! run_tagged python3 -u $SCRIPTSDIR/04-prepare-weblate-components/lang_plural_check.py $translation_path; then
+                tagged_colorize "$RED" "[ERROR] Plural form check failed: $component / $locale - skipping this locale"
                 had_failure=1
+                CURRENT_LOCALE="-"
                 continue
             fi
 
-            echo "[INFO] Uploading PO filse: $translation_path"
-            if ! python3 -u $SCRIPTSDIR/common/weblate_utils.py upload-po-file \
+            log "[INFO] Uploading PO filse: $translation_path"
+            if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py upload-po-file \
                     --project $PROJECT \
                     --category $ZANATA_VERSION \
                     --component $component \
                     --locale $locale \
                     --po-path $translation_path; then
-                colorize "$RED" "[ERROR] Failed to upload PO file: $component / $locale - skipping this locale"
+                tagged_colorize "$RED" "[ERROR] Failed to upload PO file: $component / $locale - skipping this locale"
                 had_failure=1
+                CURRENT_LOCALE="-"
                 continue
             fi
             sleep 10
 
+            CURRENT_LOCALE="-"
         done
 
     done
+    CURRENT_COMPONENT="-"
 
     if [ "$had_failure" -eq 1 ]; then
         return 1

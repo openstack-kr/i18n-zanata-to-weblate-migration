@@ -47,27 +47,27 @@ export GIT_TERMINAL_PROMPT=0
 
 # You should set WEBLATE_URL and WEBLATE_TOKEN
 # system environment variables.
-echo "[INFO] Check variables"
+log "[INFO] Check variables"
 if [ -z "$WEBLATE_URL" ] || [ "$WEBLATE_URL" == "<weblate_url>" ]; then
-    colorize "$RED" "[ERROR] WEBLATE_URL is not set"
+    tagged_colorize "$RED" "[ERROR] WEBLATE_URL is not set"
     exit 1
 fi
 if [ -z "$WEBLATE_TOKEN" ] || [ "$WEBLATE_TOKEN" == "<weblate_token>" ]; then
-    colorize "$RED" "[ERROR] WEBLATE_TOKEN is not set"
+    tagged_colorize "$RED" "[ERROR] WEBLATE_TOKEN is not set"
     exit 1
 fi
-echo "[INFO] WEBLATE_URL and WEBLATE_TOKEN are set"
+log "[INFO] WEBLATE_URL and WEBLATE_TOKEN are set"
 
 stage "Setup environment and prepare workspace"
 if ! setup_env_and_prepare_workspace "$PROJECT"; then
-    colorize "$RED" "[ERROR] Failed to setup environment and prepare workspace"
+    tagged_colorize "$RED" "[ERROR] Failed to setup environment and prepare workspace"
     exit 1
 fi
 endstage
 
 stage "Clone $PROJECT project"
 if ! clone_project "$PROJECT" "$ZANATA_VERSION"; then
-    colorize "$RED" "[ERROR] Failed to clone $PROJECT project"
+    tagged_colorize "$RED" "[ERROR] Failed to clone $PROJECT project"
     exit 1
 fi
 endstage
@@ -133,7 +133,7 @@ if [ ${#COMPONENTS[@]} -eq 0 ]; then
     fail "No components to process"
     exit 1
 fi
-echo "[INFO] Components to migrate: ${COMPONENTS[@]}"
+log "[INFO] Components to migrate: ${COMPONENTS[@]}"
 endstage
 
 stage "Create Weblate components"
@@ -143,7 +143,7 @@ stage "Create Weblate components"
 # exit code below still reflects the failure.
 component_migration_failed=0
 if ! create_weblate_components; then
-    colorize "$RED" "[ERROR] One or more components/locales failed to migrate"
+    tagged_colorize "$RED" "[ERROR] One or more components/locales failed to migrate"
     component_migration_failed=1
 fi
 endstage
@@ -154,13 +154,13 @@ stage "Start Accuracy Test"
 # other locale/component that passed.
 accuracy_test_failed=0
 if ! test_accuracy; then
-    colorize "$RED" "[ERROR] One or more components/locales failed accuracy testing"
+    tagged_colorize "$RED" "[ERROR] One or more components/locales failed accuracy testing"
     accuracy_test_failed=1
 fi
 endstage
 
 # Clean
-echo "[INFO] Clean up workspace directory"
+log "[INFO] Clean up workspace directory"
 # Not remove the project repository for reuse.
 # TODO: Create code for cleanup all projects.
 rm -rf $HOME/$WORKSPACE_NAME/projects/pot
