@@ -377,11 +377,74 @@ class WeblateUtils:
             'Authorization': f'Token {self.config.token}',
         }
 
+    def _with_connection_retry(
+        self,
+        request_fn: Callable[[], requests.Response],
+        error_context: str,
+        retry_count: int = 5,
+        sleep_time: int = 15,
+    ) -> requests.Response:
+        """Call request_fn, retrying on connection-level failures.
+
+        request_fn is called fresh on every attempt - needed because
+        a file-like request body (e.g. a PO file handle or a zip
+        buffer) may be partially consumed by requests before a
+        connection-level failure interrupts the send, so it must be
+        able to reset itself on each call (mirrors the requirement
+        _post_with_retry's build_kwargs has for the same reason).
+
+        Only a RequestException with no response attached is treated
+        as connection-level (e.g. connection refused, timeout, DNS
+        failure - the server never actually answered) and retried.
+        One that carries a response is an HTTP error raised by the
+        caller's own raise_for_status(): the server did respond and
+        rejected the request, so retrying the exact same request
+        cannot help - that propagates immediately, unchanged from the
+        behavior before this retry was added.
+
+        :param request_fn: no-arg callable that performs the request
+            and returns its Response
+        :param error_context: short description of the failed
+            request, used in log messages (e.g. "Failed to get:
+            <url>")
+        :param retry_count: number of attempts before giving up
+        :param sleep_time: seconds to sleep between attempts
+        :returns: the successful response
+        """
+        assert retry_count >= 1, "retry_count must allow at least one attempt"
+        last_exception = None
+        for cnt in range(retry_count):
+            try:
+                return request_fn()
+            except requests.exceptions.RequestException as e:
+                if getattr(e, 'response', None) is not None:
+                    print(f"[ERROR] {error_context}")
+                    print(f"[ERROR] Exception: {e}")
+                    print(f"[ERROR] Response details: {e.response.text}")
+                    sys.exit(1)
+
+                last_exception = e
+                if cnt + 1 == retry_count:
+                    break
+                print(f"[ERROR] {error_context} (attempt {cnt + 1} "
+                      f"of {retry_count}): {e}, retrying")
+                time.sleep(sleep_time)
+
+        print(f"[ERROR] {error_context}")
+        print(f"[ERROR] Gave up after {retry_count} attempts: "
+              f"{last_exception}")
+        sys.exit(1)
+
     def _get(self, url, params=None, raise_error=False) -> requests.Response:
         """Get query to request
 
         Weblate uses a RESTful API, so query parameters
         should be passed in the URL.
+
+        Retries on connection-level failures (connection refused,
+        timeout, DNS failure - see _with_connection_retry) since those
+        mean the server never responded at all, not that it rejected
+        the request.
 
         :param url: The URL to send the request to
         :param params: The parameters to send in the request
@@ -395,16 +458,13 @@ class WeblateUtils:
             with status code 1.
         :returns: requests.Response
         """
-        try:
+        def do_get():
             response = requests.get(url, headers=self._headers, params=params)
             if raise_error:
                 response.raise_for_status()
             return response
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Failed to get: {url}")
-            if hasattr(e, 'response') and e.response is not None:
-                print(f"[ERROR] Response details: {e.response.text}")
-            sys.exit(1)
+
+        return self._with_connection_retry(do_get, f"Failed to get: {url}")
 
     def _post(
         self,
@@ -417,6 +477,14 @@ class WeblateUtils:
 
         When the file is included in the request,
         the file should be passed in the file parameter.
+
+        Retries on connection-level failures (connection refused,
+        timeout, DNS failure - see _with_connection_retry) since those
+        mean the server never responded at all, not that it rejected
+        the request. Any file-like value in `file` is rewound to the
+        start before each attempt, since requests reads it to EOF
+        while sending - without this, a retry after a connection
+        failure mid-send would upload a truncated or empty file.
 
         :param url: The URL string to send the request to
         :param data: (Optional) The data string to send in the request
@@ -431,10 +499,14 @@ class WeblateUtils:
             with status code 1.
         :returns: requests.Response
         """
-        try:
+        def do_post():
             # The requests.post automatically set the Content-Type
             # depending on the post type.
             if file:
+                for value in file.values():
+                    fileobj = value[1] if isinstance(value, tuple) else value
+                    if hasattr(fileobj, 'seek'):
+                        fileobj.seek(0)
                 response = requests.post(
                     url, data=data, files=file, headers=self._headers)
             else:
@@ -444,12 +516,8 @@ class WeblateUtils:
                 response.raise_for_status()
 
             return response
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Failed to post: {url}")
-            print(f"[ERROR] Exception: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                print(f"[ERROR] Response: {e.response.text}")
-            sys.exit(1)
+
+        return self._with_connection_retry(do_post, f"Failed to post: {url}")
 
     def _post_with_retry(
         self,
@@ -708,10 +776,10 @@ class WeblateUtils:
         }
 
         def build_kwargs():
-            # Rewind before every attempt: requests reads the buffer
-            # to EOF while sending it, so a retry with an unseeked
-            # buffer would upload an empty zip.
-            zip_buf.seek(0)
+            # _post()'s do_post rewinds every file-like value in
+            # `file` before each send, so no explicit seek is needed
+            # here - it covers both this loop's retries and _post()'s
+            # own internal connection-level retries.
             return {
                 'data': data,
                 'file': {
@@ -818,10 +886,10 @@ class WeblateUtils:
         print(f"[INFO] Uploading PO file: {po_path}")
         with open(po_path, 'rb') as f:
             def build_kwargs():
-                # Rewind before every attempt: requests reads the
-                # file to EOF while sending it, so a retry without
-                # this would upload an empty file.
-                f.seek(0)
+                # _post()'s do_post rewinds every file-like value in
+                # `file` before each send, so no explicit seek is
+                # needed here - it covers both this loop's retries
+                # and _post()'s own internal connection-level retries.
                 return {'file': {'file': f}, 'data': {'method': 'replace'}}
 
             self._post_with_retry(
