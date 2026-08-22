@@ -93,6 +93,7 @@ function create_weblate_components {
                 had_failure=1
                 continue
             fi
+            sleep 10
 
         done
 
