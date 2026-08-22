@@ -933,6 +933,13 @@ class WeblateUtils:
     ) -> None:
         """Upload a translation po file
 
+        Uses Weblate's 'translate' upload method rather than
+        'replace': every (component, locale) this is called for was
+        just created empty by create_translation(), and 'translate'
+        fills in translations from the uploaded file without the
+        wholesale file replacement 'replace' does - appropriate for
+        populating a fresh, empty translation during migration.
+
         Retries up to 3 times for anything other than success (200
         with result=true) or a non-retryable rejection (see
         is_retryable_status - most 4xx codes mean the server rejected
@@ -959,7 +966,7 @@ class WeblateUtils:
                 # `file` before each send, so no explicit seek is
                 # needed here - it covers both this loop's retries
                 # and _post()'s own internal connection-level retries.
-                return {'file': {'file': f}, 'data': {'method': 'replace'}}
+                return {'file': {'file': f}, 'data': {'method': 'translate'}}
 
             self._post_with_retry(
                 url=url,
