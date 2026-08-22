@@ -130,6 +130,127 @@ function run_tagged() {
     return "${PIPESTATUS[0]}"
 }
 
+# --- Live console tree (phase 2) ---------------------------------
+#
+# migration_projects.sh's live console used to echo every tagged line
+# verbatim - the same density for a locale that succeeded in one
+# request as one that took 3 retries and failed. create_weblate_components.sh
+# now instead builds a compressed project/category -> component ->
+# locale tree (success collapsed to one line, only failures expand),
+# while project.log/error.log keep the full detail from phase 1
+# unchanged. Since the child process (migration_resources.sh) and the
+# parent (migration_projects.sh) only share one pipe, the child tags
+# each line with one of the two markers below so the parent knows
+# what to do with it - see phase-2-console-tree.md for the full
+# design.
+
+# A line already fully formatted for the live console (built by
+# tree_line() below) - the parent prints it as-is (after stripping the
+# marker) instead of tagging it and appending it to project.log. This
+# is a compressed *view* over facts already recorded via
+# log()/tagged_colorize()/run_tagged_quiet(), not new information, so
+# it deliberately doesn't also go to the log file.
+TREE_MARKER="##TREE## "
+
+# A line tagged and meant for project.log/error.log only (phase 1
+# behavior), but that the parent should NOT echo to the live console -
+# create_weblate_components.sh's per-locale steps use this instead of
+# log()/run_tagged()/tagged_colorize(), since the console now shows
+# only the compressed tree built from tree_line() calls. Other stages
+# keep using log()/run_tagged() unchanged, so their console output is
+# unaffected by phase 2.
+QUIET_MARKER="##QUIET## "
+
+# Print $1 as a ready-to-display tree line - see TREE_MARKER above.
+function tree_line() {
+    echo "${TREE_MARKER}$1"
+}
+
+# log(), but marked quiet - see QUIET_MARKER above.
+function log_quiet() {
+    echo "${QUIET_MARKER}${CURRENT_COMPONENT} | ${CURRENT_LOCALE} | $1"
+}
+
+# Run $@ like run_tagged(), but marked quiet (see QUIET_MARKER above)
+# and captured via a temp file instead of a live pipe. The temp file
+# is deliberate, not just a style choice: `cmd | while read ...; done`
+# runs the while loop in a subshell (bash's default pipeline
+# behavior), so a variable set inside it - which is exactly what's
+# needed to hand the command's last output line back to the caller
+# for the tree leaf's failure reason (see extract_status_reason()
+# below) - would not survive past the pipeline. Reading from a file
+# instead of a pipe keeps the loop in the current shell, so
+# LAST_TAGGED_LINE assigned below is visible to the caller. This means
+# output is captured in full and replayed after the command exits
+# rather than streamed live, which is fine here because quiet lines
+# never reach the console anyway (only project.log, written after the
+# fact).
+LAST_TAGGED_LINE=""
+function run_tagged_quiet() {
+    local tmp
+    tmp=$(mktemp)
+    "$@" >"$tmp" 2>&1
+    local exit_code=$?
+    while IFS= read -r line || [ -n "$line" ]; do
+        echo "${QUIET_MARKER}${CURRENT_COMPONENT} | ${CURRENT_LOCALE} | ${line}"
+    done <"$tmp"
+    # Prefer the actual "[ERROR] ... (<code>)..." summary line
+    # _retry_on_status prints, over a blind last-line grab - if the
+    # failed response's body is itself multi-line (e.g. an HTML
+    # 502/503 gateway page, which is_retryable_status/_retry_on_status
+    # in weblate_utils.py are written to expect), the real file's last
+    # physical line is a fragment of that body, not the summary line;
+    # the status code and (for the final attempt) "not retrying"/
+    # "failed after N attempts" text are always on the summary line's
+    # first physical line, before the body is appended, so this still
+    # finds it regardless of how many lines the body wraps onto. Falls
+    # back to the literal last line for failures that don't go through
+    # _retry_on_status at all (e.g. lang_plural_check.py).
+    LAST_TAGGED_LINE=$(grep -E '^\[ERROR\].*\([0-9]{3}\)' "$tmp" | tail -n 1)
+    if [ -z "$LAST_TAGGED_LINE" ]; then
+        LAST_TAGGED_LINE=$(tail -n 1 "$tmp")
+    fi
+    rm -f "$tmp"
+    return "$exit_code"
+}
+
+# Pull a short "<status> <reason>" (plus a retry-count suffix, if any)
+# out of a weblate_utils.py CLI failure's last printed line, for a
+# tree leaf's one-line failure summary. _retry_on_status
+# (common/weblate_utils.py) always ends a failed call with one of:
+#   "[ERROR] {action} rejected (<code>), not retrying: <body>"
+#   "[ERROR] {action} failed after <n> attempts (<code>): <body>"
+# and <body> is often JSON with a "code" field (e.g.
+# {"errors":[{"code":"not_found",...}]}). Falls back to a truncated
+# copy of the raw line when neither pattern matches - not every
+# failure in create_weblate_components.sh's loop goes through
+# _retry_on_status (e.g. lang_plural_check.py doesn't).
+#
+# Depends on PCRE support in `grep -P` (GNU grep built with
+# --enable-perl-regexp, the default on Debian/Ubuntu - see
+# phase-2-console-tree.md for why this wasn't verified against the
+# actual batch-run host).
+function extract_status_reason() {
+    local text="$1"
+    local status
+    status=$(echo "$text" | grep -oP '\(\K[0-9]{3}(?=\))' | head -1)
+    local reason
+    reason=$(echo "$text" | grep -oP '"code":"\K[^"]+' | head -1)
+    local attempts
+    attempts=$(echo "$text" | grep -oP 'failed after \K[0-9]+(?= attempts)')
+    local retry_suffix=""
+    if [ -n "$attempts" ]; then
+        retry_suffix=" (${attempts}회 재시도 후)"
+    fi
+    if [ -n "$status" ] && [ -n "$reason" ]; then
+        echo "${status} ${reason}${retry_suffix}"
+    elif [ -n "$status" ]; then
+        echo "${status}${retry_suffix}"
+    else
+        echo "${text:0:60}"
+    fi
+}
+
 # title is a description of the stage
 function stage() {
     local title=$1

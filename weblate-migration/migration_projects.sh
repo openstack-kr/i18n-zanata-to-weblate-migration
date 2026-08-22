@@ -119,29 +119,25 @@ total_count=0
 total_elapsed=0
 completed_items=0
 
-while IFS= read -r project || [ -n "$project" ]; do   
-    echo "=== Project: $project ==="
+while IFS= read -r project || [ -n "$project" ]; do
     if [[ -z "${project// }" ]]; then
         continue
     fi
-    
+
     # Trim before creating the log directory - otherwise a leading/
     # trailing space in list.txt makes this word-split into the wrong
     # path, and every later log write for this project silently goes
     # missing (aggregate_report.py then can't classify its failures).
     project=$(echo "$project" | xargs)
     mkdir -p "logs/$project"
-    
+
     # Generate timestamp for error log filename. Includes the date (not
     # just HH:MM:SS) since this value is also used as summary.tsv's
     # run_id, which aggregate_report.py relies on to find the exact
     # log file for a run - two runs of the same project at the same
     # wall-clock second on different days must not collide.
     TIMESTAMP=$(date +%Y%m%d%H%M%S)
-    
-    echo ""
-    echo "=== Project: $project ==="
-    
+
     # Iterate over the versions
     while IFS= read -r version || [ -n "$version" ]; do
         # Skip empty lines or lines with only whitespace
@@ -166,6 +162,10 @@ while IFS= read -r project || [ -n "$project" ]; do
             eta_display="예상 남은 시간: 계산 중..."
         fi
         echo "[$total_count/$total_pairs] (${percent}%) 처리 중: '$project' (버전: $version) ($eta_display)"
+        # Tree root (phase 2): replaces the old "=== Project: X ==="
+        # header - one root line per (project, version), closed below
+        # once migration_exit_code is known.
+        colorize "$YELLOW" "$project / $version  ⏳ 진행중"
         item_start_epoch=$(date +%s)
 
         # path for log files
@@ -189,7 +189,37 @@ while IFS= read -r project || [ -n "$project" ]; do
         # MIGRATION_SCRIPT failed. PIPESTATUS[0] captures the actual
         # exit code of MIGRATION_SCRIPT, and must be read immediately
         # after the pipeline, before any other command runs.
-        "$MIGRATION_SCRIPT" "$project" "$version" 2>&1 | while IFS= read -r line; do
+        "$MIGRATION_SCRIPT" "$project" "$version" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
+            # Phase 2: create_weblate_components.sh now tags each line
+            # with one of two markers instead of always being both
+            # logged and echoed the same way - see TREE_MARKER/
+            # QUIET_MARKER in common/pretty-printer.sh for the full
+            # protocol. Lines from every other stage (clone, POT
+            # generation, 05-test-accuracy, migration_resources.sh's
+            # own [INFO]/[ERROR] lines) carry neither marker and fall
+            # through to the phase-1 behavior unchanged: tagged,
+            # logged, and echoed.
+            if [[ "$line" == "${TREE_MARKER}"* ]]; then
+                tree_content="${line#$TREE_MARKER}"
+                if [[ "$tree_content" == *"✗"* ]]; then
+                    colorize "$RED" "$tree_content"
+                elif [[ "$tree_content" == *"⏳"* ]]; then
+                    colorize "$YELLOW" "$tree_content"
+                else
+                    colorize "$GREEN" "$tree_content"
+                fi
+                continue
+            fi
+            if [[ "$line" == "${QUIET_MARKER}"* ]]; then
+                line="${line#$QUIET_MARKER}"
+                plain_line="$project | $version | $line"
+                echo "$plain_line" >> "$LOG_FILE"
+                if [[ "$line" == *" | [ERROR]"* ]]; then
+                    echo "$plain_line" >> "$ERROR_LOG"
+                fi
+                continue
+            fi
+
             plain_line="$project | $version | $line"
             # Log file writes must always stay plain text - never
             # colorize this, or error.*.log/project.*.log end up with
@@ -223,10 +253,15 @@ while IFS= read -r project || [ -n "$project" ]; do
         done
         migration_exit_code=${PIPESTATUS[0]}
 
+        # Tree root, closed (phase 2) - replaces the old bare Success/
+        # Failed summary line. Kept as its own colorize() call (not a
+        # QUIET_MARKER/TREE_MARKER line from the child) since it's
+        # this process's own project/version-level verdict, derived
+        # from $migration_exit_code which only this process has.
         if [ "$migration_exit_code" -eq 0 ]; then
-            colorize "$GREEN" "[$total_count] Success: '$project' (version: $version)"
+            colorize "$GREEN" "$project / $version  ✓ SUCCESS"
         else
-            colorize "$RED" "[$total_count] Failed: '$project' (version: $version) (exit code: $migration_exit_code)"
+            colorize "$RED" "$project / $version  ✗ FAILED (exit code: $migration_exit_code)"
         fi
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$(date '+%Y-%m-%dT%H:%M:%S')" "$project" "$version" \

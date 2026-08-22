@@ -21,10 +21,6 @@ function create_weblate_components {
     # skipped instead of aborting every remaining component/locale for
     # this branch via `exit`.
     local had_failure=0
-    # Components whose creation itself failed, so the translation loop
-    # below can skip them outright instead of attempting (and failing)
-    # every one of their locales individually.
-    local failed_components=()
 
     cd $SCRIPTSDIR
     WORKSPACE_DIR=$HOME/workspace/projects/$PROJECT/$WORKSPACE_NAME/test
@@ -44,76 +40,116 @@ function create_weblate_components {
     run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-glossary --project $PROJECT || exit 1
     # Create category with the branch name
     run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-category --project $PROJECT --category $ZANATA_VERSION || exit 1
-    # Create components with the pot file for Weblate component initialization.
+
+    # phase 2: creation and translations used to be two separate
+    # passes over COMPONENTS (create every component first, then
+    # attempt translations for the ones that succeeded, skipping the
+    # rest with a one-off error line). Merged into a single pass here
+    # so each component's tree line (success/fail + child failures)
+    # can be printed exactly once, right after that component is
+    # fully done - either at creation failure or after its whole
+    # translation loop - instead of needing a second "skip" branch to
+    # explain why a component has no translation attempts.
+    local total_components=${#COMPONENTS[@]}
+    local component_index=0
+
     for component in ${COMPONENTS[@]}; do
         CURRENT_COMPONENT="$component"
+        component_index=$((component_index + 1))
+        local component_connector="├─"
+        if [ "$component_index" -eq "$total_components" ]; then
+            component_connector="└─"
+        fi
+        local child_prefix="│  "
+        if [ "$component_connector" == "└─" ]; then
+            child_prefix="   "
+        fi
+
         pot_path=$(get_pot_path $component)
 
-        if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-component \
+        if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py create-component \
                 --project $PROJECT \
                 --category $ZANATA_VERSION \
                 --component $component \
                 --pot-path $pot_path; then
-            tagged_colorize "$RED" "[ERROR] Failed to create component: $component - skipping this component"
             had_failure=1
-            failed_components+=("$component")
-            continue
-        fi
-    done
-    CURRENT_COMPONENT="-"
-
-    for component in ${COMPONENTS[@]}; do
-        CURRENT_COMPONENT="$component"
-
-        if [[ " ${failed_components[@]} " == *" $component "* ]]; then
-            tagged_colorize "$RED" "[ERROR] Skipping translations for $component - component creation failed earlier"
+            tree_line "$(printf '%s ✗ %-28s (컴포넌트 생성 실패)' "$component_connector" "$component")"
+            tree_line "$(printf '%s└─ ✗ %s' "$child_prefix" "$(printf '%-8s%-20s%s' "-" "create-component" "$(extract_status_reason "$LAST_TAGGED_LINE")")")"
             continue
         fi
 
         translation_path_list=$(get_translation_path_list $component)
+        local total_locales=0
+        for translation_path in $translation_path_list; do
+            total_locales=$((total_locales + 1))
+        done
+        local success_count=0
+        # One rendered "<locale>  <operation>  <status reason>" entry
+        # per failed locale, printed as this component's tree children
+        # once the loop below finishes - successful locales are never
+        # added here, so they never appear as their own line (only
+        # reflected in success_count/total_locales above).
+        local failed_locale_lines=()
 
         for translation_path in $translation_path_list; do
             locale=$(extract_locale_from_path $translation_path)
             CURRENT_LOCALE="$locale"
-            log "[INFO] Creating translation, locale: $locale, component: $component"
+            log_quiet "[INFO] Creating translation, locale: $locale, component: $component"
 
-            if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py create-translation \
+            if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py create-translation \
                     --project $PROJECT \
                     --category $ZANATA_VERSION \
                     --component $component \
                     --locale $locale; then
-                tagged_colorize "$RED" "[ERROR] Failed to create translation: $component / $locale - skipping this locale"
                 had_failure=1
+                failed_locale_lines+=("$(printf '%-8s%-20s%s' "$locale" "create-translation" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
                 continue
             fi
             sleep 10
 
-            log "[INFO] Check plural forms..."
-            if ! run_tagged python3 -u $SCRIPTSDIR/04-prepare-weblate-components/lang_plural_check.py $translation_path; then
-                tagged_colorize "$RED" "[ERROR] Plural form check failed: $component / $locale - skipping this locale"
+            log_quiet "[INFO] Check plural forms..."
+            if ! run_tagged_quiet python3 -u $SCRIPTSDIR/04-prepare-weblate-components/lang_plural_check.py $translation_path; then
                 had_failure=1
+                failed_locale_lines+=("$(printf '%-8s%-20s%s' "$locale" "plural-check" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
                 continue
             fi
 
-            log "[INFO] Uploading PO filse: $translation_path"
-            if ! run_tagged python3 -u $SCRIPTSDIR/common/weblate_utils.py upload-po-file \
+            log_quiet "[INFO] Uploading PO filse: $translation_path"
+            if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py upload-po-file \
                     --project $PROJECT \
                     --category $ZANATA_VERSION \
                     --component $component \
                     --locale $locale \
                     --po-path $translation_path; then
-                tagged_colorize "$RED" "[ERROR] Failed to upload PO file: $component / $locale - skipping this locale"
                 had_failure=1
+                failed_locale_lines+=("$(printf '%-8s%-20s%s' "$locale" "upload-po-file" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
                 continue
             fi
             sleep 10
 
+            success_count=$((success_count + 1))
             CURRENT_LOCALE="-"
         done
 
+        local component_symbol="✓"
+        if [ "${#failed_locale_lines[@]}" -gt 0 ]; then
+            component_symbol="✗"
+        fi
+        tree_line "$(printf '%s %s %-28s %d/%d' "$component_connector" "$component_symbol" "$component" "$success_count" "$total_locales")"
+
+        local failed_count=${#failed_locale_lines[@]}
+        local locale_index=0
+        for entry in "${failed_locale_lines[@]}"; do
+            locale_index=$((locale_index + 1))
+            local locale_connector="├─"
+            if [ "$locale_index" -eq "$failed_count" ]; then
+                locale_connector="└─"
+            fi
+            tree_line "$(printf '%s%s ✗ %s' "$child_prefix" "$locale_connector" "$entry")"
+        done
     done
     CURRENT_COMPONENT="-"
 
