@@ -174,9 +174,31 @@ TREE_MARKER="##TREE## "
 # unaffected by phase 2.
 QUIET_MARKER="##QUIET## "
 
+# A tree line that replaces the immediately preceding tree line on a
+# real terminal (e.g. "⏳ 환경설정 진행중..." -> "✓ 환경설정 완료" on
+# the same row), instead of appending a new one - migration_projects.sh
+# only does this when its own stdout is a TTY (see colorize()'s
+# IS_TTY, same reasoning: an ANSI cursor-up/clear-line sequence is
+# meaningless - and corrupts the byte stream - when stdout is
+# redirected to a file or captured by another process). When not a
+# TTY, the parent falls back to printing this as a normal new line, so
+# a start/done pair always reads correctly either way. Only use this
+# for a stage with exactly one such pair (the ⏳ line is immediately
+# followed by exactly one done line, nothing else printed in between) -
+# create_weblate_components.sh/test.sh's multi-line trees don't fit
+# this and keep using plain tree_line() for their own "⏳ ... 진행중"
+# header instead.
+TREE_UPDATE_MARKER="##TREE_UPDATE## "
+
 # Print $1 as a ready-to-display tree line - see TREE_MARKER above.
 function tree_line() {
     echo "${TREE_MARKER}$1"
+}
+
+# Print $1 as a tree line that updates the previous one - see
+# TREE_UPDATE_MARKER above.
+function tree_line_update() {
+    echo "${TREE_UPDATE_MARKER}$1"
 }
 
 # log(), but marked quiet - see QUIET_MARKER above.

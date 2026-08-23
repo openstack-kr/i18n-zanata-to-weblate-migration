@@ -73,7 +73,7 @@ if ! setup_env_and_prepare_workspace "$PROJECT"; then
     exit 1
 fi
 endstage
-tree_line "✓ 환경설정 완료"
+tree_line_update "✓ 환경설정 완료"
 
 stage "Clone $PROJECT project"
 tree_line "⏳ 클론 진행중..."
@@ -82,7 +82,7 @@ if ! clone_project "$PROJECT" "$ZANATA_VERSION"; then
     exit 1
 fi
 endstage
-tree_line "✓ 클론 완료"
+tree_line_update "✓ 클론 완료"
 
 # NOTE: POT generation (setup_*, which writes zanata.xml) and the Zanata
 # export (pull_translation_files) are kept in a single stage here rather
@@ -148,7 +148,7 @@ if [ ${#COMPONENTS[@]} -eq 0 ]; then
 fi
 log_quiet "[INFO] Components to migrate: ${COMPONENTS[*]}"
 endstage
-tree_line "✓ POT 생성 완료 (컴포넌트 ${#COMPONENTS[@]}개: ${COMPONENTS[*]})"
+tree_line_update "✓ POT 생성 완료 (컴포넌트 ${#COMPONENTS[@]}개: ${COMPONENTS[*]})"
 
 stage "Create Weblate components"
 # Kept as a flag rather than exiting immediately: a partial failure
