@@ -107,6 +107,16 @@ function create_weblate_components {
         # reflected in success_count/total_locales above).
         local failed_locale_lines=()
 
+        # First progress line is a new tree_line() (nothing to update
+        # yet); every one after - on each locale's outcome below -
+        # replaces it in place via tree_line_update(), so a component
+        # with many locales (each an API round-trip, sometimes with
+        # retry sleeps) shows live movement instead of sitting silent
+        # under "⏳ 컴포넌트 생성 진행중..." until every one finishes.
+        if [ "$total_locales" -gt 0 ]; then
+            tree_line "$(component_progress_text "$component_connector" "$component" 0 "$total_locales" 0)"
+        fi
+
         for translation_path in $translation_path_list; do
             locale=$(extract_locale_from_path $translation_path)
             CURRENT_LOCALE="$locale"
@@ -120,6 +130,7 @@ function create_weblate_components {
                 had_failure=1
                 failed_locale_lines+=("$(printf '%-8s%-20s%s' "$locale" "create-translation" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
+                update_component_progress
                 continue
             fi
             sleep 10
@@ -129,6 +140,7 @@ function create_weblate_components {
                 had_failure=1
                 failed_locale_lines+=("$(printf '%-8s%-20s%s' "$locale" "plural-check" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
+                update_component_progress
                 continue
             fi
 
@@ -142,12 +154,14 @@ function create_weblate_components {
                 had_failure=1
                 failed_locale_lines+=("$(printf '%-8s%-20s%s' "$locale" "upload-po-file" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
+                update_component_progress
                 continue
             fi
             sleep 10
 
             success_count=$((success_count + 1))
             CURRENT_LOCALE="-"
+            update_component_progress
         done
 
         # "0/0" would otherwise render as a plain ✓ - true in the
@@ -165,9 +179,15 @@ function create_weblate_components {
             component_symbol="✗"
         fi
         if [ "$total_locales" -eq 0 ]; then
+            # No progress line was ever printed for this component (see
+            # the `total_locales -gt 0` guard above it), so there's
+            # nothing to update - a fresh line, like before.
             tree_line "$(printf '%s %s %-28s (번역 파일 없음)' "$component_connector" "$component_symbol" "$component")"
         else
-            tree_line "$(printf '%s %s %-28s %d/%d' "$component_connector" "$component_symbol" "$component" "$success_count" "$total_locales")"
+            # Replaces the last progress line instead of appending a
+            # new one - see component_progress_text() in
+            # common/pretty-printer.sh.
+            tree_line_update "$(printf '%s %s %-28s %d/%d' "$component_connector" "$component_symbol" "$component" "$success_count" "$total_locales")"
         fi
 
         local failed_count=${#failed_locale_lines[@]}

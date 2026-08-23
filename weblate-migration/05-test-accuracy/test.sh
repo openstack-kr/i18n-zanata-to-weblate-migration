@@ -55,6 +55,14 @@ function test_accuracy {
         # create_weblate_components.sh's failed_locale_lines.
         local failed_locale_lines=()
 
+        # See create_weblate_components.sh's identical progress-line
+        # pair for why this is a fresh tree_line() only the first time
+        # (nothing to update yet) and tree_line_update() after every
+        # locale's outcome from here on.
+        if [ "$total_locales" -gt 0 ]; then
+            tree_line "$(component_progress_text "$component_connector" "$component" 0 "$total_locales" 0)"
+        fi
+
         for translation_path in "${translation_path_array[@]}"; do
             local locale=$(extract_locale_from_path $translation_path)
             CURRENT_LOCALE="$locale"
@@ -77,6 +85,7 @@ function test_accuracy {
                 had_failure=1
                 failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "existence" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
+                update_component_progress
                 continue
             fi
 
@@ -97,6 +106,7 @@ function test_accuracy {
                 had_failure=1
                 failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "fuzzy-untranslated" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
+                update_component_progress
                 continue
             fi
 
@@ -117,6 +127,7 @@ function test_accuracy {
                 had_failure=1
                 failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "placeholder" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
+                update_component_progress
                 continue
             fi
 
@@ -133,6 +144,7 @@ function test_accuracy {
                 had_failure=1
                 failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "sentence-count" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
+                update_component_progress
                 continue
             fi
 
@@ -149,6 +161,7 @@ function test_accuracy {
                 had_failure=1
                 failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "sentence-detail" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
+                update_component_progress
                 continue
             fi
 
@@ -164,11 +177,13 @@ function test_accuracy {
                 had_failure=1
                 failed_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "po-format" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
+                update_component_progress
                 continue
             fi
 
             success_count=$((success_count + 1))
             CURRENT_LOCALE="-"
+            update_component_progress
         done
 
         # See create_weblate_components.sh's identical check for why
@@ -182,7 +197,7 @@ function test_accuracy {
         if [ "$total_locales" -eq 0 ]; then
             tree_line "$(printf '%s %s %-28s (테스트할 번역 파일 없음)' "$component_connector" "$component_symbol" "$component")"
         else
-            tree_line "$(printf '%s %s %-28s %d/%d' "$component_connector" "$component_symbol" "$component" "$success_count" "$total_locales")"
+            tree_line_update "$(printf '%s %s %-28s %d/%d' "$component_connector" "$component_symbol" "$component" "$success_count" "$total_locales")"
         fi
 
         local failed_count=${#failed_locale_lines[@]}

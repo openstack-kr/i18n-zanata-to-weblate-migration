@@ -224,7 +224,25 @@ while IFS= read -r project || [ -n "$project" ]; do
         # degrade to "prints a new line" instead of "corrupts the
         # screen".
         last_line_was_tree_start=0
-        "$MIGRATION_SCRIPT" "$project" "$version" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
+        # Buffers a TREE_UPDATE_MARKER line when stdout isn't a live
+        # terminal (see the IS_TTY branch below) - create_weblate_components.sh/
+        # test.sh now call tree_line_update() once per locale (a live
+        # progress counter), not just once per component, so printing
+        # every one as its own line here would flood a component with
+        # many locales instead of collapsing to the single done/failed
+        # line they're meant to end on. Flushed by flush_pending_tree_update
+        # right before anything else needs to reach the console, and
+        # once more after the loop for whatever update was still
+        # pending when the stream closed.
+        pending_tree_update=""
+        flush_pending_tree_update() {
+            if [ -n "$pending_tree_update" ]; then
+                print_tree_content "$pending_tree_update"
+                pending_tree_update=""
+            fi
+        }
+        "$MIGRATION_SCRIPT" "$project" "$version" 2>&1 | {
+        while IFS= read -r line || [ -n "$line" ]; do
             # create_weblate_components.sh/test.sh/every other stage now
             # tag each line with one of three markers instead of always
             # being both logged and echoed the same way - see
@@ -238,18 +256,25 @@ while IFS= read -r project || [ -n "$project" ]; do
             # echoed - a safety net, not the expected path.
             if [[ "$line" == "${TREE_UPDATE_MARKER}"* ]]; then
                 tree_content="${line#$TREE_UPDATE_MARKER}"
-                if [ "$IS_TTY" -eq 1 ] && [ "$last_line_was_tree_start" -eq 1 ]; then
-                    # Cursor up one line + clear it, so this prints on
-                    # top of the "⏳ ... 진행중" line tree_line_update()
-                    # is meant to replace, instead of appending a new
-                    # one - meaningless (and stream-corrupting) when
-                    # stdout isn't a real terminal, hence the IS_TTY
-                    # guard: redirected/piped output just gets a plain
-                    # new line below, same as TREE_MARKER. Also skipped
-                    # if the adjacency invariant above doesn't hold.
-                    printf '\033[1A\033[2K'
+                if [ "$IS_TTY" -eq 1 ]; then
+                    if [ "$last_line_was_tree_start" -eq 1 ]; then
+                        # Cursor up one line + clear it, so this prints
+                        # on top of the "⏳ ... 진행중" line
+                        # tree_line_update() is meant to replace,
+                        # instead of appending a new one. Skipped if
+                        # the adjacency invariant doesn't hold (see
+                        # last_line_was_tree_start's own comment).
+                        printf '\033[1A\033[2K'
+                    fi
+                    print_tree_content "$tree_content"
+                else
+                    # Meaningless (and stream-corrupting) to move the
+                    # cursor when stdout isn't a real terminal - buffer
+                    # instead of printing immediately, so a long chain
+                    # of per-locale updates collapses to just its final
+                    # state (see pending_tree_update's comment above).
+                    pending_tree_update="$tree_content"
                 fi
-                print_tree_content "$tree_content"
                 # A done/failed update line is itself never a valid
                 # "start" to overwrite again - see the ⏳-only check
                 # in the TREE_MARKER branch below for why this isn't
@@ -262,6 +287,7 @@ while IFS= read -r project || [ -n "$project" ]; do
                 continue
             fi
             if [[ "$line" == "${TREE_MARKER}"* ]]; then
+                flush_pending_tree_update
                 tree_content="${line#$TREE_MARKER}"
                 print_tree_content "$tree_content"
                 if [[ "$tree_content" == *"⏳"* ]]; then
@@ -282,6 +308,7 @@ while IFS= read -r project || [ -n "$project" ]; do
             fi
 
             last_line_was_tree_start=0
+            flush_pending_tree_update
             plain_line="$project | $version | $line"
             # Log file writes must always stay plain text - never
             # colorize this, or error.*.log/project.*.log end up with
@@ -313,6 +340,12 @@ while IFS= read -r project || [ -n "$project" ]; do
                 echo "$plain_line" >> "$ERROR_LOG"
             fi
         done
+        # Whatever update was still buffered when the stream closed
+        # (e.g. the very last locale's progress line, if nothing else
+        # printed after it) would otherwise never reach the console at
+        # all on a non-TTY run.
+        flush_pending_tree_update
+        }
         migration_exit_code=${PIPESTATUS[0]}
 
         # Tree root, closed (phase 2) - replaces the old bare Success/

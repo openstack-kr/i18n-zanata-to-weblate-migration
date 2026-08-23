@@ -176,18 +176,19 @@ QUIET_MARKER="##QUIET## "
 
 # A tree line that replaces the immediately preceding tree line on a
 # real terminal (e.g. "⏳ 환경설정 진행중..." -> "✓ 환경설정 완료" on
-# the same row), instead of appending a new one - migration_projects.sh
-# only does this when its own stdout is a TTY (see colorize()'s
-# IS_TTY, same reasoning: an ANSI cursor-up/clear-line sequence is
-# meaningless - and corrupts the byte stream - when stdout is
-# redirected to a file or captured by another process). When not a
-# TTY, the parent falls back to printing this as a normal new line, so
-# a start/done pair always reads correctly either way. Only use this
-# for a stage with exactly one such pair (the ⏳ line is immediately
-# followed by exactly one done line, nothing else printed in between) -
-# create_weblate_components.sh/test.sh's multi-line trees don't fit
-# this and keep using plain tree_line() for their own "⏳ ... 진행중"
-# header instead.
+# the same row, or a live "N/total done" counter updating locale by
+# locale), instead of appending a new one - migration_projects.sh only
+# does this when its own stdout is a TTY (see colorize()'s IS_TTY,
+# same reasoning: an ANSI cursor-up/clear-line sequence is meaningless
+# - and corrupts the byte stream - when stdout is redirected to a file
+# or captured by another process). When not a TTY, the parent instead
+# *buffers* the update (see pending_tree_update in migration_projects.sh)
+# and only prints the last one in a chain, right before the next
+# non-update line needs to reach the console (or at the very end of
+# the stream) - so a long run of per-locale updates still collapses to
+# one line there too, just without the live redraw. A call site only
+# needs an immediately preceding tree_line()/tree_line_update() to
+# replace - chains of any length work the same way on both paths.
 TREE_UPDATE_MARKER="##TREE_UPDATE## "
 
 # Print $1 as a ready-to-display tree line - see TREE_MARKER above.
@@ -204,6 +205,41 @@ function tree_line_update() {
 # log(), but marked quiet - see QUIET_MARKER above.
 function log_quiet() {
     echo "${QUIET_MARKER}${CURRENT_COMPONENT} | ${CURRENT_LOCALE} | $1"
+}
+
+# Print a live "N/total done, K failed" progress line for the
+# component currently being processed, updating in place (on a real
+# terminal) as each locale finishes - used by
+# create_weblate_components.sh/test.sh's per-locale loops so a
+# component with many locales isn't silent for the many minutes it
+# can take (each locale is an API round-trip, sometimes with retry
+# sleeps) between its "⏳ 컴포넌트 생성 진행중..." header and the one
+# tree line that used to appear only once every locale in it was
+# done. Callers print the first one via tree_line() (nothing to
+# update yet) and every one after via tree_line_update(); this
+# function only builds the text.
+function component_progress_text() {
+    local connector="$1" component="$2" done_count="$3" total="$4" failed_count="$5"
+    local fail_note=""
+    if [ "$failed_count" -gt 0 ]; then
+        fail_note=" (${failed_count}개 실패)"
+    fi
+    printf '%s ⏳ %-28s %d/%d 진행중...%s' "$connector" "$component" "$done_count" "$total" "$fail_note"
+}
+
+# component_progress_text() + tree_line_update() for the component
+# currently being processed. Deliberately takes no arguments - reads
+# component_connector/component/success_count/failed_locale_lines/
+# total_locales straight from the caller's own local variables (bash
+# resolves an unset name in a function by walking up the call stack,
+# so a `local` in create_weblate_components.sh's/test.sh's locale loop
+# is visible here without being passed explicitly). Called identically
+# after every one of the ~13 per-locale outcomes across both files;
+# keeping it a single no-argument helper instead of repeating the full
+# expression at each call site means a future change to what the
+# progress line shows only has one place to change.
+function update_component_progress() {
+    tree_line_update "$(component_progress_text "$component_connector" "$component" "$((success_count + ${#failed_locale_lines[@]}))" "$total_locales" "${#failed_locale_lines[@]}")"
 }
 
 # Run $@ like run_tagged(), but marked quiet (see QUIET_MARKER above)
