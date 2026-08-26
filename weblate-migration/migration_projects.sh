@@ -3,6 +3,17 @@
 LIST_FILE="$1"
 VERSION_FILE="${2:-version.txt}"
 
+# Provides colorize()/RED/GREEN/YELLOW/NC/IS_TTY. Sourced here (in
+# this process) rather than relying on migration_resources.sh's copy,
+# because IS_TTY must reflect *this* process's own stdout -
+# migration_resources.sh is invoked below as `"$MIGRATION_SCRIPT" ... |
+# while read line; do ... done`, so its stdout is always a pipe, even
+# during an interactive batch run at a real terminal. Sourced before
+# the usage/argument checks below too, so those also print with the
+# "[ERROR]" tag every other error in this pipeline uses (see README's
+# log format) instead of a bare "Error: ...".
+source "$(dirname "$0")/common/pretty-printer.sh"
+
 # Check the usage of the script
 if [ $# -eq 0 ]; then
     echo "사용법: $0 <list_file> [version_file]"
@@ -12,30 +23,21 @@ if [ $# -eq 0 ]; then
 fi
 
 if [ ! -f "$LIST_FILE" ]; then
-    echo "Error: File '$LIST_FILE' does not exist."
+    colorize "$RED" "[ERROR] File '$LIST_FILE' does not exist."
     exit 1
 fi
 
 if [ ! -f "$VERSION_FILE" ]; then
-    echo "Error: File '$VERSION_FILE' does not exist."
+    colorize "$RED" "[ERROR] File '$VERSION_FILE' does not exist."
     exit 1
 fi
 
 MIGRATION_SCRIPT="$(dirname "$0")/migration_resources.sh"
 
 if [ ! -f "$MIGRATION_SCRIPT" ]; then
-    echo "Error: migration_resources.sh file does not exist in '$MIGRATION_SCRIPT'."
+    colorize "$RED" "[ERROR] migration_resources.sh file does not exist in '$MIGRATION_SCRIPT'."
     exit 1
 fi
-
-# Provides colorize()/RED/GREEN/YELLOW/NC/IS_TTY for the status lines
-# below. Sourced here (in this process) rather than relying on
-# migration_resources.sh's copy, because IS_TTY must reflect *this*
-# process's own stdout - migration_resources.sh is invoked below as
-# `"$MIGRATION_SCRIPT" ... | while read line; do ... done`, so its
-# stdout is always a pipe, even during an interactive batch run at a
-# real terminal.
-source "$(dirname "$0")/common/pretty-printer.sh"
 
 # Colorize and print $1 (a tree_line()/tree_line_update() payload,
 # marker already stripped) by the status symbol it contains - shared
