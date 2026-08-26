@@ -938,7 +938,15 @@ class WeblateUtils:
         just created empty by create_translation(), and 'translate'
         fills in translations from the uploaded file without the
         wholesale file replacement 'replace' does - appropriate for
-        populating a fresh, empty translation during migration.
+        populating a fresh, empty translation during migration. It
+        also avoids a real failure mode 'replace' hits: po files can
+        legitimately contain two distinct msgids that differ only by
+        trailing whitespace (e.g. the same source string used with
+        and without a trailing space in different templates), which
+        Weblate's id_hash treats as identical - 'replace' tries to
+        insert both as separate units and hits a DB unique-constraint
+        violation, while 'translate' only fills matching existing
+        units and silently ignores the second one.
 
         Retries up to 3 times for anything other than success (200
         with result=true) or a non-retryable rejection (see
@@ -966,7 +974,10 @@ class WeblateUtils:
                 # `file` before each send, so no explicit seek is
                 # needed here - it covers both this loop's retries
                 # and _post()'s own internal connection-level retries.
-                return {'file': {'file': f}, 'data': {'method': 'translate'}}
+                return {
+                    'file': {'file': f},
+                    'data': {'method': 'translate', 'fuzzy': 'process'},
+                }
 
             self._post_with_retry(
                 url=url,

@@ -82,7 +82,7 @@ ZANATA_LANG_RULES = {
         'plurals': 'nplurals=2; plural=(n != 1)'
     },
     'bn': {
-        'region_code': ['bn'],
+        'region_code': ['bn', 'bn_IN'],
         'plurals': 'nplurals=2; plural=(n != 1)'
     },
     'bo': {
