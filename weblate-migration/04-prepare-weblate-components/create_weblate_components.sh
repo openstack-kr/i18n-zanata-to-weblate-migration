@@ -133,8 +133,6 @@ function create_weblate_components {
                 update_component_progress
                 continue
             fi
-            sleep 10
-
             log_quiet "[INFO] Check plural forms..."
             if ! run_tagged_quiet python3 -u $SCRIPTSDIR/04-prepare-weblate-components/lang_plural_check.py $translation_path; then
                 had_failure=1

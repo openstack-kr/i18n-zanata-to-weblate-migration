@@ -644,6 +644,106 @@ class WeblateUtils:
             sleep_time=sleep_time,
         )
 
+    def _wait_for_translation_source_units(
+        self,
+        url: str,
+        locale: str,
+        expected_total: int = None,
+        retry_count: int = 60,
+        sleep_time: int = 5,
+    ) -> None:
+        """Wait until Weblate has populated a translation's source units.
+
+        A component or translation creation request can finish before
+        Weblate has populated its source units. Poll the translation
+        endpoint until it reports a usable total. If expected_total is
+        given, the reported total must match it exactly; otherwise any
+        positive total is considered ready.
+
+        :param url: translation API URL to poll
+        :param locale: locale label used in log and error messages
+        :param expected_total: exact source unit count to wait for, or
+            None to accept any positive count
+        :param retry_count: number of status checks before giving up
+        :param sleep_time: seconds to sleep between status checks
+        :returns: None
+        """
+        assert retry_count >= 1, "retry_count must allow at least one attempt"
+        last_detail = "no response"
+
+        for cnt in range(retry_count):
+            response = self._get(url)
+            total = None
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                except ValueError as e:
+                    print(f"[ERROR] Invalid JSON while waiting for "
+                          f"translation {locale}: {e}")
+                    sys.exit(1)
+
+                total = data.get('total') if isinstance(data, dict) else None
+                if not isinstance(total, int):
+                    print(f"[ERROR] Invalid translation response for "
+                          f"{locale}: {response.text}")
+                    sys.exit(1)
+
+            if expected_total is None:
+                is_ready = isinstance(total, int) and total > 0
+            else:
+                is_ready = total == expected_total
+            if is_ready:
+                print(f"[INFO] Translation ready: {locale} "
+                      f"({total} source strings)")
+                return
+
+            if total is not None:
+                last_detail = f"total={total}"
+            else:
+                last_detail = f"HTTP {response.status_code}: {response.text}"
+
+            if (response.status_code not in (200, 404)
+                    and not is_retryable_status(response.status_code)):
+                print(f"[ERROR] Failed while waiting for translation "
+                      f"{locale}: {last_detail}")
+                sys.exit(1)
+
+            if cnt + 1 < retry_count:
+                print(f"[INFO] Waiting for translation: {locale} "
+                      f"({last_detail})")
+                time.sleep(sleep_time)
+
+        print(f"[ERROR] Timed out waiting for translation {locale} after "
+              f"{retry_count} attempts: {last_detail}")
+        sys.exit(1)
+
+    def _wait_for_component_source(
+        self,
+        project_name: str,
+        category_name: str,
+        component_name: str,
+        pot_path: str,
+    ) -> None:
+        """Wait until all POT entries are available as source strings.
+
+        Some Weblate versions return no component ``task_url`` even though
+        initialization is still running.  Polling the source translation is
+        the fallback readiness signal and also verifies that a completed task
+        imported the whole POT before target languages are created.
+        """
+        pot = polib.pofile(pot_path)
+        expected_total = sum(1 for entry in pot if not entry.obsolete)
+        path = (f'translations/{sanitize_slug(project_name)}/'
+                f'{sanitize_slug(category_name)}%252F'
+                f'{sanitize_slug(component_name)}/en_US/')
+        url = urljoin(self.base_url, path)
+        self._wait_for_translation_source_units(
+            url,
+            'source en_US',
+            expected_total=expected_total,
+            retry_count=180,
+        )
+
     def _build_category_list(self, project_name: str) -> dict:
         """Get category list for the project
 
@@ -808,6 +908,12 @@ class WeblateUtils:
         )
 
         if response.status_code == 200:
+            self._wait_for_component_source(
+                project_name,
+                category_name,
+                component_name,
+                pot_path,
+            )
             print("[INFO] Component already exists: ", component_name)
             return
 
@@ -866,6 +972,12 @@ class WeblateUtils:
             build_kwargs=build_kwargs,
             action='Create component',
         )
+        self._wait_for_component_source(
+            project_name,
+            category_name,
+            component_name,
+            pot_path,
+        )
         print("[INFO] Component created: ", component_name)
 
     def create_translation(
@@ -895,14 +1007,16 @@ class WeblateUtils:
                 f'{sanitize_slug(category_name)}%252F'
                 f'{sanitize_slug(component_name)}/'
                 f'{locale}/')
-        url = urljoin(self.base_url, path)
+        translation_url = urljoin(self.base_url, path)
         response = self._get_with_retry(
-            url,
+            translation_url,
             success=lambda r: r.status_code in (200, 404),
             action='Check translation existence',
         )
 
         if response.status_code == 200:
+            self._wait_for_translation_source_units(
+                translation_url, locale)
             print("[INFO] Translation already exists: ", locale)
             return
 
@@ -910,17 +1024,18 @@ class WeblateUtils:
                 f'{sanitize_slug(category_name)}%252F'
                 f'{sanitize_slug(component_name)}/'
                 f'translations/')
-        url = urljoin(self.base_url, path)
+        create_url = urljoin(self.base_url, path)
         data = {
             'language_code': locale,
         }
 
         self._post_with_retry(
-            url=url,
+            url=create_url,
             success=lambda r: r.status_code == 201,
             build_kwargs=lambda: {'data': data},
             action='Create translation',
         )
+        self._wait_for_translation_source_units(translation_url, locale)
         print("[INFO] Translation created: ", locale)
 
     def upload_po_file(
