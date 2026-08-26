@@ -37,6 +37,27 @@ fi
 # real terminal.
 source "$(dirname "$0")/common/pretty-printer.sh"
 
+# Colorize and print $1 (a tree_line()/tree_line_update() payload,
+# marker already stripped) by the status symbol it contains - shared
+# by the TREE_MARKER and TREE_UPDATE_MARKER branches below so the two
+# don't drift out of sync with each other.
+print_tree_content() {
+    local tree_content="$1"
+    if [[ "$tree_content" == *"✗"* ]]; then
+        colorize "$RED" "$tree_content"
+    elif [[ "$tree_content" == *"⏳"* ]]; then
+        colorize "$YELLOW" "$tree_content"
+    elif [[ "$tree_content" == *"✓"* ]]; then
+        colorize "$GREEN" "$tree_content"
+    else
+        # A plain informational line (e.g. the "다음 5단계 진행 예정:
+        # ..." roadmap) with no status symbol of its own - print as-is,
+        # neither red/yellow/green nor forced green by default like a
+        # real success line would be.
+        echo "$tree_content"
+    fi
+}
+
 # Check the execution permission of the script
 if [ ! -x "$MIGRATION_SCRIPT" ]; then
     colorize "$YELLOW" "Warning: migration_resources.sh does not have execution permission. Granting execution permission."
@@ -119,29 +140,25 @@ total_count=0
 total_elapsed=0
 completed_items=0
 
-while IFS= read -r project || [ -n "$project" ]; do   
-    echo "=== Project: $project ==="
+while IFS= read -r project || [ -n "$project" ]; do
     if [[ -z "${project// }" ]]; then
         continue
     fi
-    
+
     # Trim before creating the log directory - otherwise a leading/
     # trailing space in list.txt makes this word-split into the wrong
     # path, and every later log write for this project silently goes
     # missing (aggregate_report.py then can't classify its failures).
     project=$(echo "$project" | xargs)
     mkdir -p "logs/$project"
-    
+
     # Generate timestamp for error log filename. Includes the date (not
     # just HH:MM:SS) since this value is also used as summary.tsv's
     # run_id, which aggregate_report.py relies on to find the exact
     # log file for a run - two runs of the same project at the same
     # wall-clock second on different days must not collide.
     TIMESTAMP=$(date +%Y%m%d%H%M%S)
-    
-    echo ""
-    echo "=== Project: $project ==="
-    
+
     # Iterate over the versions
     while IFS= read -r version || [ -n "$version" ]; do
         # Skip empty lines or lines with only whitespace
@@ -166,6 +183,10 @@ while IFS= read -r project || [ -n "$project" ]; do
             eta_display="예상 남은 시간: 계산 중..."
         fi
         echo "[$total_count/$total_pairs] (${percent}%) 처리 중: '$project' (버전: $version) ($eta_display)"
+        # Tree root (phase 2): replaces the old "=== Project: X ==="
+        # header - one root line per (project, version), closed below
+        # once migration_exit_code is known.
+        colorize "$YELLOW" "$project / $version  ⏳ 진행중"
         item_start_epoch=$(date +%s)
 
         # path for log files
@@ -189,8 +210,106 @@ while IFS= read -r project || [ -n "$project" ]; do
         # MIGRATION_SCRIPT failed. PIPESTATUS[0] captures the actual
         # exit code of MIGRATION_SCRIPT, and must be read immediately
         # after the pipeline, before any other command runs.
-        "$MIGRATION_SCRIPT" "$project" "$version" 2>&1 | while IFS= read -r line; do
-            plain_line="$version | $line"
+        # Tracks whether the most recent line actually printed to the
+        # console was specifically a "⏳ ... 진행중" tree_line() - the
+        # only thing a following tree_line_update() is ever meant to
+        # overwrite. Reset to 0 by every other console-visible line
+        # (any other TREE_MARKER content, or the fallback echo branch);
+        # left alone by QUIET_MARKER lines, since those never touch
+        # the console at all. Without this, a future change that adds
+        # any visible line between a stage's tree_line("⏳ ...") and
+        # its tree_line_update("✓ ...") would make the cursor-up+clear
+        # below silently overwrite that unrelated line instead of the
+        # intended progress line - this makes that failure mode
+        # degrade to "prints a new line" instead of "corrupts the
+        # screen".
+        last_line_was_tree_start=0
+        # Buffers a TREE_UPDATE_MARKER line when stdout isn't a live
+        # terminal (see the IS_TTY branch below) - create_weblate_components.sh/
+        # test.sh now call tree_line_update() once per locale (a live
+        # progress counter), not just once per component, so printing
+        # every one as its own line here would flood a component with
+        # many locales instead of collapsing to the single done/failed
+        # line they're meant to end on. Flushed by flush_pending_tree_update
+        # right before anything else needs to reach the console, and
+        # once more after the loop for whatever update was still
+        # pending when the stream closed.
+        pending_tree_update=""
+        flush_pending_tree_update() {
+            if [ -n "$pending_tree_update" ]; then
+                print_tree_content "$pending_tree_update"
+                pending_tree_update=""
+            fi
+        }
+        "$MIGRATION_SCRIPT" "$project" "$version" 2>&1 | {
+        while IFS= read -r line || [ -n "$line" ]; do
+            # create_weblate_components.sh/test.sh/every other stage now
+            # tag each line with one of three markers instead of always
+            # being both logged and echoed the same way - see
+            # TREE_MARKER/TREE_UPDATE_MARKER/QUIET_MARKER in
+            # common/pretty-printer.sh for the full protocol. Lines
+            # carrying no marker (there should be none left in normal
+            # operation - every stage now routes through
+            # log_quiet()/run_tagged_quiet()/tree_line(), or a
+            # still-visible fatal-error tagged_colorize()) fall through
+            # to the phase-1 behavior unchanged: tagged, logged, and
+            # echoed - a safety net, not the expected path.
+            if [[ "$line" == "${TREE_UPDATE_MARKER}"* ]]; then
+                tree_content="${line#$TREE_UPDATE_MARKER}"
+                if [ "$IS_TTY" -eq 1 ]; then
+                    if [ "$last_line_was_tree_start" -eq 1 ]; then
+                        # Cursor up one line + clear it, so this prints
+                        # on top of the "⏳ ... 진행중" line
+                        # tree_line_update() is meant to replace,
+                        # instead of appending a new one. Skipped if
+                        # the adjacency invariant doesn't hold (see
+                        # last_line_was_tree_start's own comment).
+                        printf '\033[1A\033[2K'
+                    fi
+                    print_tree_content "$tree_content"
+                else
+                    # Meaningless (and stream-corrupting) to move the
+                    # cursor when stdout isn't a real terminal - buffer
+                    # instead of printing immediately, so a long chain
+                    # of per-locale updates collapses to just its final
+                    # state (see pending_tree_update's comment above).
+                    pending_tree_update="$tree_content"
+                fi
+                # A done/failed update line is itself never a valid
+                # "start" to overwrite again - see the ⏳-only check
+                # in the TREE_MARKER branch below for why this isn't
+                # just "=1".
+                if [[ "$tree_content" == *"⏳"* ]]; then
+                    last_line_was_tree_start=1
+                else
+                    last_line_was_tree_start=0
+                fi
+                continue
+            fi
+            if [[ "$line" == "${TREE_MARKER}"* ]]; then
+                flush_pending_tree_update
+                tree_content="${line#$TREE_MARKER}"
+                print_tree_content "$tree_content"
+                if [[ "$tree_content" == *"⏳"* ]]; then
+                    last_line_was_tree_start=1
+                else
+                    last_line_was_tree_start=0
+                fi
+                continue
+            fi
+            if [[ "$line" == "${QUIET_MARKER}"* ]]; then
+                line="${line#$QUIET_MARKER}"
+                plain_line="$project | $version | $line"
+                echo "$plain_line" >> "$LOG_FILE"
+                if [[ "$line" == *" | [ERROR]"* ]]; then
+                    echo "$plain_line" >> "$ERROR_LOG"
+                fi
+                continue
+            fi
+
+            last_line_was_tree_start=0
+            flush_pending_tree_update
+            plain_line="$project | $version | $line"
             # Log file writes must always stay plain text - never
             # colorize this, or error.*.log/project.*.log end up with
             # raw ANSI escape bytes in them, which breaks grep and the
@@ -204,23 +323,40 @@ while IFS= read -r project || [ -n "$project" ]; do
             # run at a real terminal, because its stdout is always a
             # pipe in this context (see the IS_TTY comment on the
             # `source pretty-printer.sh` line above) - so it's safe to
-            # colorize purely by matching the tag text.
-            if [[ "$line" == \[ERROR\]* || "$line" == \[Failed\]* ]]; then
+            # colorize purely by matching the tag text. Since phase-1
+            # log tagging, every line from migration_resources.sh's
+            # log()/colorize()/run_tagged() (common/pretty-printer.sh)
+            # is prefixed "component | locale | ", so the [ERROR]/
+            # [Failed] tag itself no longer starts the line - match it
+            # right after that prefix's trailing " | " instead of
+            # anchoring at the start of the line.
+            if [[ "$line" == *" | [ERROR]"* || "$line" == *" | [Failed]"* ]]; then
                 colorize "$RED" "$plain_line"
             else
                 echo "$plain_line"
             fi
             # save the error line to the error log file
-            if [[ "$line" == \[ERROR\]* ]]; then
+            if [[ "$line" == *" | [ERROR]"* ]]; then
                 echo "$plain_line" >> "$ERROR_LOG"
             fi
         done
+        # Whatever update was still buffered when the stream closed
+        # (e.g. the very last locale's progress line, if nothing else
+        # printed after it) would otherwise never reach the console at
+        # all on a non-TTY run.
+        flush_pending_tree_update
+        }
         migration_exit_code=${PIPESTATUS[0]}
 
+        # Tree root, closed (phase 2) - replaces the old bare Success/
+        # Failed summary line. Kept as its own colorize() call (not a
+        # QUIET_MARKER/TREE_MARKER line from the child) since it's
+        # this process's own project/version-level verdict, derived
+        # from $migration_exit_code which only this process has.
         if [ "$migration_exit_code" -eq 0 ]; then
-            colorize "$GREEN" "[$total_count] Success: '$project' (version: $version)"
+            colorize "$GREEN" "$project / $version  ✓ SUCCESS"
         else
-            colorize "$RED" "[$total_count] Failed: '$project' (version: $version) (exit code: $migration_exit_code)"
+            colorize "$RED" "$project / $version  ✗ FAILED (exit code: $migration_exit_code)"
         fi
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$(date '+%Y-%m-%dT%H:%M:%S')" "$project" "$version" \

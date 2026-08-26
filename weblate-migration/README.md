@@ -121,13 +121,16 @@ The timestamp is the current time of migration start. The format is HHMMSS.
 Log format is:
 
 ```text
-// version | message
-stable/2025.2 | [INFO] Testing locale: mai
-stable/2025.2 | [INFO] Step 1/2: Check the sentence count...
-stable/2025.2 | [INFO] ✓ Count matched(translated/total): 73/177
-stable/2025.2 | [INFO] Step 2/2: Check the sentence detail...
-stable/2025.2 | [INFO] ✓ Sentence detail matched: 177 entries
+// project | category | component | locale | message
+horizon | stable/2025.2 | openstack-dashboard-django | mai | [INFO] Testing locale: mai
+horizon | stable/2025.2 | openstack-dashboard-django | mai | [INFO] Step 1/2: Check the sentence count...
+horizon | stable/2025.2 | openstack-dashboard-django | mai | [INFO] ✓ Count matched(translated/total): 73/177
+horizon | stable/2025.2 | openstack-dashboard-django | mai | [INFO] Step 2/2: Check the sentence detail...
+horizon | stable/2025.2 | openstack-dashboard-django | mai | [INFO] ✓ Sentence detail matched: 177 entries
 ```
+
+`component`/`locale` are `-` for lines from stages before a
+component/locale is determined (e.g. clone, POT generation).
 
 > **Note:** The current tool mainly focuses on translation resource
 > migration, and actual resource migration process currently requires

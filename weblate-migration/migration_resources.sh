@@ -47,30 +47,42 @@ export GIT_TERMINAL_PROMPT=0
 
 # You should set WEBLATE_URL and WEBLATE_TOKEN
 # system environment variables.
-echo "[INFO] Check variables"
+log_quiet "[INFO] Check variables"
 if [ -z "$WEBLATE_URL" ] || [ "$WEBLATE_URL" == "<weblate_url>" ]; then
-    colorize "$RED" "[ERROR] WEBLATE_URL is not set"
+    tagged_colorize "$RED" "[ERROR] WEBLATE_URL is not set"
     exit 1
 fi
 if [ -z "$WEBLATE_TOKEN" ] || [ "$WEBLATE_TOKEN" == "<weblate_token>" ]; then
-    colorize "$RED" "[ERROR] WEBLATE_TOKEN is not set"
+    tagged_colorize "$RED" "[ERROR] WEBLATE_TOKEN is not set"
     exit 1
 fi
-echo "[INFO] WEBLATE_URL and WEBLATE_TOKEN are set"
+log_quiet "[INFO] WEBLATE_URL and WEBLATE_TOKEN are set"
+
+# Printed once so a long silent stretch during a slow stage (e.g. pip
+# installs, a big git clone) doesn't read as the run having hung -
+# without this, all a person sees between "⏳ 진행중" and the next
+# status line is nothing, with no way to tell "still working" from
+# "stuck". No status symbol of its own, so it renders uncolored (see
+# migration_projects.sh's tree dispatch).
+tree_line "다음 5단계 진행 예정: 환경설정 → 클론 → POT 생성 → 컴포넌트 생성 → 정확도 테스트"
 
 stage "Setup environment and prepare workspace"
+tree_line "⏳ 환경설정 진행중..."
 if ! setup_env_and_prepare_workspace "$PROJECT"; then
-    colorize "$RED" "[ERROR] Failed to setup environment and prepare workspace"
+    tagged_colorize "$RED" "[ERROR] Failed to setup environment and prepare workspace: $FATAL_REASON"
     exit 1
 fi
 endstage
+tree_line_update "✓ 환경설정 완료"
 
 stage "Clone $PROJECT project"
+tree_line "⏳ 클론 진행중..."
 if ! clone_project "$PROJECT" "$ZANATA_VERSION"; then
-    colorize "$RED" "[ERROR] Failed to clone $PROJECT project"
+    tagged_colorize "$RED" "[ERROR] Failed to clone $PROJECT project: $FATAL_REASON"
     exit 1
 fi
 endstage
+tree_line_update "✓ 클론 완료"
 
 # NOTE: POT generation (setup_*, which writes zanata.xml) and the Zanata
 # export (pull_translation_files) are kept in a single stage here rather
@@ -84,6 +96,7 @@ endstage
 # arms; both are out of scope for this consistency-only change. See
 # phase-1 result doc for details.
 stage "Generate POT and export translations from Zanata"
+tree_line "⏳ POT 생성 진행중..."
 case $PROJECT in
     api-site)
         setup_manuals
@@ -133,8 +146,9 @@ if [ ${#COMPONENTS[@]} -eq 0 ]; then
     fail "No components to process"
     exit 1
 fi
-echo "[INFO] Components to migrate: ${COMPONENTS[@]}"
+log_quiet "[INFO] Components to migrate: ${COMPONENTS[*]}"
 endstage
+tree_line_update "✓ POT 생성 완료 (컴포넌트 ${#COMPONENTS[@]}개: ${COMPONENTS[*]})"
 
 stage "Create Weblate components"
 # Kept as a flag rather than exiting immediately: a partial failure
@@ -143,7 +157,7 @@ stage "Create Weblate components"
 # exit code below still reflects the failure.
 component_migration_failed=0
 if ! create_weblate_components; then
-    colorize "$RED" "[ERROR] One or more components/locales failed to migrate"
+    tagged_colorize "$RED" "[ERROR] One or more components/locales failed to migrate"
     component_migration_failed=1
 fi
 endstage
@@ -154,13 +168,13 @@ stage "Start Accuracy Test"
 # other locale/component that passed.
 accuracy_test_failed=0
 if ! test_accuracy; then
-    colorize "$RED" "[ERROR] One or more components/locales failed accuracy testing"
+    tagged_colorize "$RED" "[ERROR] One or more components/locales failed accuracy testing"
     accuracy_test_failed=1
 fi
 endstage
 
 # Clean
-echo "[INFO] Clean up workspace directory"
+log_quiet "[INFO] Clean up workspace directory"
 # Not remove the project repository for reuse.
 # TODO: Create code for cleanup all projects.
 rm -rf $HOME/$WORKSPACE_NAME/projects/pot
