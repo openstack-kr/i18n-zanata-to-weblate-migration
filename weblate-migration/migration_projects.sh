@@ -33,6 +33,7 @@ if [ ! -f "$VERSION_FILE" ]; then
 fi
 
 MIGRATION_SCRIPT="$(dirname "$0")/migration_resources.sh"
+MIGRATION_WORKSPACE_NAME="${MIGRATION_WORKSPACE_NAME:-workspace}"
 
 if [ ! -f "$MIGRATION_SCRIPT" ]; then
     colorize "$RED" "[ERROR] migration_resources.sh file does not exist in '$MIGRATION_SCRIPT'."
@@ -243,7 +244,7 @@ while IFS= read -r project || [ -n "$project" ]; do
                 pending_tree_update=""
             fi
         }
-        "$MIGRATION_SCRIPT" "$project" "$version" 2>&1 | {
+        "$MIGRATION_SCRIPT" "$project" "$version" "$MIGRATION_WORKSPACE_NAME" 2>&1 | {
         while IFS= read -r line || [ -n "$line" ]; do
             # create_weblate_components.sh/test.sh/every other stage now
             # tag each line with one of three markers instead of always
@@ -380,42 +381,3 @@ done < "$LIST_FILE"
 
 echo "====================="
 echo "=== Migration completed ==="
-
-# Print the project x version x component x locale status table and
-# save the same content to report.md, so a person doesn't have to
-# open every logs/<project>/error.*.log by hand to see what happened.
-# Both outputs come from aggregate_report.py's build_report() rows -
-# --format table (stdout) and --report-md (file) render the exact
-# same rows, so they can't disagree with each other.
-#
-# Workspace root must match the one migration_resources.sh actually
-# wrote result.jsonl into. This script never passes a third
-# (workspace_name) argument to migration_resources.sh, so that script
-# always uses its own default, "workspace" (see migration_resources.sh
-# WORKSPACE_NAME and README.rst's "Workspace Structure" section) -
-# i.e. $HOME/workspace, not "$LOG_DIR" or any other variable name that
-# might suggest otherwise.
-REPORT_WORKSPACE="$HOME/workspace"
-
-# aggregate_report.py imports common/weblate_utils.py, which imports
-# polib/requests at module load time. Prefer the migration venv
-# (README.rst: "<workspace>/.venv/: Python virtual environment
-# containing migration dependencies") if it exists, and only fall
-# back to the bare `python3` on PATH otherwise.
-REPORT_PYTHON="$REPORT_WORKSPACE/.venv/bin/python3"
-if [ ! -x "$REPORT_PYTHON" ]; then
-    REPORT_PYTHON="python3"
-fi
-
-echo ""
-echo "=== Migration Report ==="
-if ! "$REPORT_PYTHON" "$(dirname "$0")/aggregate_report.py" \
-        --logs-dir logs --workspace "$REPORT_WORKSPACE" \
-        --format table --report-md report.md; then
-    # Report generation is a convenience on top of the batch run, not
-    # part of it - a failure here (e.g. missing polib/requests, an
-    # unreadable log) must not be mistaken for the migrations
-    # themselves having failed, and must not change this script's own
-    # exit status.
-    colorize "$YELLOW" "Warning: Failed to generate migration report (aggregate_report.py exited non-zero). logs/ and result.jsonl are still available for manual review."
-fi

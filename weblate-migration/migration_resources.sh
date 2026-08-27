@@ -146,6 +146,27 @@ if [ ${#COMPONENTS[@]} -eq 0 ]; then
     fail "No components to process"
     exit 1
 fi
+
+# An optional, whitespace-separated allow-list is useful for focused
+# migration tests without changing the project's normal component discovery.
+# Example: MIGRATION_COMPONENTS="horizon-django" ./migration_resources.sh ...
+if [ -n "${MIGRATION_COMPONENTS:-}" ]; then
+    FILTERED_COMPONENTS=()
+    for component in "${COMPONENTS[@]}"; do
+        for requested_component in $MIGRATION_COMPONENTS; do
+            if [ "$component" = "$requested_component" ]; then
+                FILTERED_COMPONENTS+=("$component")
+                break
+            fi
+        done
+    done
+    COMPONENTS=("${FILTERED_COMPONENTS[@]}")
+
+    if [ ${#COMPONENTS[@]} -eq 0 ]; then
+        fail "None of the requested components were found: $MIGRATION_COMPONENTS"
+        exit 1
+    fi
+fi
 log_quiet "[INFO] Components to migrate: ${COMPONENTS[*]}"
 endstage
 tree_line_update "✓ POT 생성 완료 (컴포넌트 ${#COMPONENTS[@]}개: ${COMPONENTS[*]})"
