@@ -1305,6 +1305,8 @@ class WeblateUtils:
                 detail_status=None,
                 total_entries=None,
                 mismatch_count=None,
+                string_mismatch_count=None,
+                plural_mismatch_count=None,
                 missing_count=None,
                 extra_count=None,
                 detail_errors=[],
@@ -1427,6 +1429,8 @@ class WeblateUtils:
                 detail_status=None,
                 total_entries=None,
                 mismatch_count=None,
+                string_mismatch_count=None,
+                plural_mismatch_count=None,
                 missing_count=None,
                 extra_count=None,
                 detail_errors=[],
@@ -1596,6 +1600,17 @@ class WeblateUtils:
         }
 
         if errors:
+            # One summary line with the total count, printed last -
+            # this (not one of the per-entry lines above) is what
+            # extract_status_reason() (common/pretty-printer.sh) sees,
+            # since it only captures the last printed line. Without
+            # this, the tree would show one arbitrary example msgid
+            # instead of how many mismatches there were. See
+            # failure-reason-categorization/plan.md.
+            print(
+                "[ERROR] Placeholder consistency check completed "
+                f"with issues: mismatches={len(errors)}"
+            )
             self._save_result(
                 project_name, category_name, component_name, locale,
                 placeholder_status='fail',
@@ -1614,6 +1629,8 @@ class WeblateUtils:
                 detail_status=None,
                 total_entries=None,
                 mismatch_count=None,
+                string_mismatch_count=None,
+                plural_mismatch_count=None,
                 missing_count=None,
                 extra_count=None,
                 detail_errors=[],
@@ -1668,6 +1685,8 @@ class WeblateUtils:
             'detail_status': None,
             'total_entries': None,
             'mismatch_count': None,
+            'string_mismatch_count': None,
+            'plural_mismatch_count': None,
             'missing_count': None,
             'extra_count': None,
             'detail_errors': [],
@@ -1786,7 +1805,8 @@ class WeblateUtils:
             (entry.msgid, entry.msgctxt): entry for entry in weblate_entries
         }
 
-        mismatch_count = 0
+        string_mismatch_count = 0
+        plural_mismatch_count = 0
         missing_count = 0
         errors = []
 
@@ -1851,7 +1871,7 @@ class WeblateUtils:
                         entry_mismatched = True
 
                 if entry_mismatched:
-                    mismatch_count += 1
+                    plural_mismatch_count += 1
             # Compare msgstr from zanata and weblate
             elif zanata_entry.msgstr != weblate_entry.msgstr:
                 error_msg = (
@@ -1862,7 +1882,7 @@ class WeblateUtils:
                 )
                 print(f"[ERROR] {error_msg}")
                 errors.append(error_msg)
-                mismatch_count += 1
+                string_mismatch_count += 1
 
         # Check for entries in Weblate but not in Zanata
         zanata_keys = {(e.msgid, e.msgctxt) for e in zanata_entries}
@@ -1887,6 +1907,7 @@ class WeblateUtils:
                 print(f"[ERROR] {error_msg}")
                 errors.append(error_msg)
 
+        mismatch_count = string_mismatch_count + plural_mismatch_count
         detail_ok = (
             mismatch_count == 0 and missing_count == 0 and
             weblate_extra_count == 0
@@ -1897,21 +1918,27 @@ class WeblateUtils:
                 f"{len(zanata_entries)} entries"
             )
         else:
+            # One combined line with all four counts always present
+            # (never conditional) - this is the only line
+            # extract_status_reason() (common/pretty-printer.sh) ever
+            # sees for a failed check-sentence-detail call (it only
+            # captures the last printed line), so a locale that fails
+            # on more than one of these can't have one silently
+            # overwrite another the way separate conditional lines
+            # would. See failure-reason-categorization/plan.md.
             print(
-                "[ERROR] Sentence detail check "
-                "completed with issues:"
+                "[ERROR] Sentence detail check completed with issues: "
+                f"string={string_mismatch_count}, "
+                f"plural={plural_mismatch_count}, "
+                f"missing={missing_count}, extra={weblate_extra_count}"
             )
-            if mismatch_count > 0:
-                print(f"[ERROR]   - Mismatches: {mismatch_count}")
-            if missing_count > 0:
-                print(f"[ERROR]   - Missing in Weblate: {missing_count}")
-            if weblate_extra_count > 0:
-                print(f"[ERROR]   - Extra in Weblate: {weblate_extra_count}")
 
         self._save_result(
             project_name, category_name, component_name, locale,
             total_entries=len(zanata_entries),
             mismatch_count=mismatch_count,
+            string_mismatch_count=string_mismatch_count,
+            plural_mismatch_count=plural_mismatch_count,
             missing_count=missing_count,
             extra_count=weblate_extra_count,
             detail_errors=errors,

@@ -285,17 +285,140 @@ function run_tagged_quiet() {
     return "$exit_code"
 }
 
-# Pull a short "<status> <reason>" (plus a retry-count suffix, if any)
-# out of a weblate_utils.py CLI failure's last printed line, for a
-# tree leaf's one-line failure summary. _retry_on_status
-# (common/weblate_utils.py) always ends a failed call with one of:
+# Map a failure line to a short, human-readable Korean category label
+# (with any relevant numbers folded in) - see
+# ~/claude-docs/weblate-migration/failure-reason-categorization/plan.md
+# for the log-frequency evidence and design behind every entry here.
+# Covers two very different kinds of failure line, both ending up in
+# the same tree leaf via extract_status_reason():
+#   - Stage 04 (create_weblate_components.sh) Weblate REST API
+#     failures: matched on the "code"/detail substrings
+#     _retry_on_status leaves in the raw line (e.g.
+#     {"errors":[{"code":"invalid","detail":"..."}]}). The console
+#     tree used to show only "<status> <code>" (e.g. "400 invalid"),
+#     which collapses several unrelated root causes into one string.
+#   - Stage 05 (05-test-accuracy/test.sh) check_* accuracy-check
+#     failures: these never go through _retry_on_status (no HTTP
+#     status/JSON code at all), so before this function existed they
+#     always fell through to the plain 60-char truncation below -
+#     worse than Stage 04's problem, since not even which check failed
+#     was visible.
+# Returns empty (no match) rather than guessing, so an unrecognized
+# pattern falls through to the code/truncation fallback below instead
+# of being silently mis-labeled - add a new case here once a real log
+# shows the pattern (this is the "whitelist + fallback" design from
+# the plan, not an attempt to cover every possible message).
+function categorize_failure_reason() {
+    local text="$1"
+
+    # --- Stage 04: Weblate REST API failures ---
+    if [[ "$text" == *"Could not add '"* ]]; then
+        echo "번역 생성 거부됨"
+        return
+    fi
+    if [[ "$text" == *"Plural forms do not match the language."* ]]; then
+        echo "Plural-Forms 헤더 불일치"
+        return
+    fi
+    if [[ "$text" == *"duplicate key value violates unique constraint"* ]]; then
+        echo "중복 키 충돌"
+        return
+    fi
+    if [[ "$text" == *'"code":"not_found"'* ]]; then
+        echo "찾을 수 없음(404)"
+        return
+    fi
+    if [[ "$text" == *"connection failed: connection to server at"* ]]; then
+        echo "DB 연결 실패"
+        return
+    fi
+    if [[ "$text" == *"Language with this language code was not found."* ]]; then
+        echo "언어 미등록"
+        return
+    fi
+    if [[ "$text" == *"Server Error (500)"* ]]; then
+        echo "서버 오류(500)"
+        return
+    fi
+
+    # --- Stage 05: check_* accuracy-check failures ---
+    if [[ "$text" == *"Component/locale does not exist"* ]]; then
+        echo "PO 파일 없음"
+        return
+    fi
+    local fuzzy_n
+    fuzzy_n=$(echo "$text" | grep -oP 'Untranslated count increased by \K[0-9]+')
+    if [ -n "$fuzzy_n" ]; then
+        local fuzzy_a fuzzy_b
+        fuzzy_a=$(echo "$text" | grep -oP 'zanata=\K[0-9]+(?= -> weblate=)')
+        fuzzy_b=$(echo "$text" | grep -oP -- '-> weblate=\K[0-9]+')
+        echo "미번역 증가 (${fuzzy_a}→${fuzzy_b}, +${fuzzy_n})"
+        return
+    fi
+    if [[ "$text" == *"sentence count mismatch:"* ]]; then
+        local count_a count_b
+        count_a=$(echo "$text" | grep -oP '\K[0-9]+(?=\(zanata\))')
+        count_b=$(echo "$text" | grep -oP '\K[0-9]+(?=\(weblate\))')
+        echo "문장 수 불일치 (${count_a}≠${count_b})"
+        return
+    fi
+    if [[ "$text" == *"Sentence detail check completed with issues:"* ]]; then
+        # check_sentence_detail() prints one final combined line with
+        # all four counts always present (never conditionally), so
+        # a locale that fails on more than one of them doesn't have
+        # one silently overwritten by the others - only the very last
+        # printed line survives into this function's input.
+        local string_n plural_n missing_n extra_n
+        string_n=$(echo "$text" | grep -oP 'string=\K[0-9]+')
+        plural_n=$(echo "$text" | grep -oP 'plural=\K[0-9]+')
+        missing_n=$(echo "$text" | grep -oP 'missing=\K[0-9]+')
+        extra_n=$(echo "$text" | grep -oP 'extra=\K[0-9]+')
+        local parts=()
+        [ -n "$string_n" ] && [ "$string_n" != "0" ] &&
+            parts+=("번역문 불일치 ${string_n}건")
+        [ -n "$plural_n" ] && [ "$plural_n" != "0" ] &&
+            parts+=("복수형 슬롯 불일치 ${plural_n}건")
+        [ -n "$missing_n" ] && [ "$missing_n" != "0" ] &&
+            parts+=("Weblate 누락 ${missing_n}건")
+        [ -n "$extra_n" ] && [ "$extra_n" != "0" ] &&
+            parts+=("Weblate 추가 ${extra_n}건")
+        # "${parts[*]}" under IFS=',' would join with "," alone - $*
+        # expansion only ever uses IFS's *first character* as the
+        # separator, so a multi-character IFS like ', ' silently
+        # collapses to just ','. printf+strip is the reliable way to
+        # join with a real ", " separator.
+        local joined
+        joined=$(printf '%s, ' "${parts[@]}")
+        echo "${joined%, }"
+        return
+    fi
+    if [[ "$text" == *"Placeholder consistency check completed with issues:"* ]]; then
+        local placeholder_n
+        placeholder_n=$(echo "$text" | grep -oP 'mismatches=\K[0-9]+')
+        echo "플레이스홀더 불일치 (${placeholder_n}건)"
+        return
+    fi
+    if [[ "$text" == *"msgfmt:"* ]]; then
+        echo "PO 포맷 오류"
+        return
+    fi
+}
+
+# Pull a short, human-readable failure reason (plus a retry-count
+# suffix, if any) out of a weblate_utils.py CLI failure's last printed
+# line, for a tree leaf's one-line failure summary. Tries
+# categorize_failure_reason()'s whitelist first (see its own comment);
+# falls back to the old "<status> <code>"/truncated-raw-line behavior
+# for anything not yet in that whitelist, so an unrecognized new
+# pattern is still visible (just not as nicely labeled) rather than
+# silently dropped. _retry_on_status (common/weblate_utils.py) always
+# ends a failed call with one of:
 #   "[ERROR] {action} rejected (<code>), not retrying: <body>"
 #   "[ERROR] {action} failed after <n> attempts (<code>): <body>"
 # and <body> is often JSON with a "code" field (e.g.
-# {"errors":[{"code":"not_found",...}]}). Falls back to a truncated
-# copy of the raw line when neither pattern matches - not every
-# failure in create_weblate_components.sh's loop goes through
-# _retry_on_status (e.g. lang_plural_check.py doesn't).
+# {"errors":[{"code":"not_found",...}]}) - not every failure in
+# create_weblate_components.sh's loop goes through _retry_on_status
+# though (e.g. lang_plural_check.py doesn't, nor do check_* calls).
 #
 # Depends on PCRE support in `grep -P` (GNU grep built with
 # --enable-perl-regexp, the default on Debian/Ubuntu - see
@@ -313,6 +436,14 @@ function extract_status_reason() {
     if [ -n "$attempts" ]; then
         retry_suffix=" (${attempts}회 재시도 후)"
     fi
+
+    local category
+    category=$(categorize_failure_reason "$text")
+    if [ -n "$category" ]; then
+        echo "${category}${retry_suffix}"
+        return
+    fi
+
     if [ -n "$status" ] && [ -n "$reason" ]; then
         echo "${status} ${reason}${retry_suffix}"
     elif [ -n "$status" ]; then
