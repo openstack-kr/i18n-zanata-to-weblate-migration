@@ -724,17 +724,22 @@ class WeblateUtils:
         retry_count: int = 60,
         sleep_time: int = 5,
     ) -> None:
-        """Wait until this translation's plural units have full slots.
+        """Wait until every has:plural unit has full target slots.
 
         Weblate populates a translation's units asynchronously (see
         _wait_for_translation_source_units), and that wait only
         checks the *number* of source units, not whether each
         plural-capable unit's target array has already reached the
-        language's full plural count. Call only when the caller
-        already knows (from the po file about to be uploaded) that
-        this translation has at least one plural entry - otherwise a
-        component with no plural strings would never find one and
-        would spin for the entire retry budget.
+        language's full plural count. A translation can have several
+        plural-capable units, so this walks every page of the
+        has:plural query instead of looking at a single one -
+        checking only one leaves the rest free to be silently and
+        permanently dropped by method='translate' if they're still
+        mid-creation when the upload happens. Call only when the
+        caller already knows (from the po file about to be uploaded)
+        that this translation has at least one plural entry -
+        otherwise a component with no plural strings would never
+        find one and would spin for the entire retry budget.
 
         :param translation_url: translation API URL (already known to
             exist by the time this is called)
@@ -755,32 +760,45 @@ class WeblateUtils:
             return
 
         units_url = urljoin(
-            translation_url,
-            'units/?' + urlencode({'q': 'has:plural', 'page_size': 1}),
-        )
+            translation_url, 'units/?' + urlencode({'q': 'has:plural'}))
         last_detail = "no plural unit found yet"
 
         for cnt in range(retry_count):
-            response = self._get(units_url)
-            if response.status_code == 200:
-                results = response.json().get('results', [])
-                if results:
-                    target_len = len(results[0].get('target', []))
-                    if target_len == nplurals:
-                        print(f"[INFO] Plural slots ready: {locale} "
-                              f"({target_len}/{nplurals})")
-                        return
+            checked = 0
+            all_ready = True
+            page_url = units_url
+
+            while page_url:
+                response = self._get(page_url)
+                if response.status_code != 200:
+                    if not is_retryable_status(response.status_code):
+                        print(f"[ERROR] Failed while waiting for plural "
+                              f"slots {locale}: HTTP "
+                              f"{response.status_code}: {response.text}")
+                        sys.exit(1)
                     last_detail = (
-                        f"plural unit has {target_len}/{nplurals} slots")
-                else:
-                    last_detail = "no plural unit found yet"
-            elif not is_retryable_status(response.status_code):
-                print(f"[ERROR] Failed while waiting for plural slots "
-                      f"{locale}: HTTP {response.status_code}: "
-                      f"{response.text}")
-                sys.exit(1)
-            else:
-                last_detail = f"HTTP {response.status_code}: {response.text}"
+                        f"HTTP {response.status_code}: {response.text}")
+                    all_ready = False
+                    break
+
+                data = response.json()
+                for unit in data.get('results', []):
+                    checked += 1
+                    target_len = len(unit.get('target', []))
+                    if target_len != nplurals:
+                        all_ready = False
+                        last_detail = (
+                            f"unit {unit.get('id', '?')} has "
+                            f"{target_len}/{nplurals} slots")
+                        break
+                if not all_ready:
+                    break
+                page_url = data.get('next')
+
+            if all_ready and checked > 0:
+                print(f"[INFO] Plural slots ready: {locale} "
+                      f"({checked} plural unit(s), {nplurals} slots each)")
+                return
 
             if cnt + 1 < retry_count:
                 print(f"[INFO] Waiting for plural slots: {locale} "
