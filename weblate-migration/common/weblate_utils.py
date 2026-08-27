@@ -1826,6 +1826,7 @@ class WeblateUtils:
         string_mismatch_count = 0
         plural_mismatch_count = 0
         missing_count = 0
+        plural_empty_skipped_count = 0
         errors = []
 
         for zanata_entry in zanata_entries:
@@ -1858,17 +1859,36 @@ class WeblateUtils:
                 entry_mismatched = False
 
                 if zanata_plurals.keys() != weblate_plurals.keys():
-                    error_msg = (
-                        f"Plural form count mismatch for msgid: "
-                        f"'{msgid}' msgctxt: '{msgctxt}' "
-                        f"- Zanata indices: "
-                        f"{sorted(zanata_plurals.keys())} "
-                        f"- Weblate indices: "
-                        f"{sorted(weblate_plurals.keys())}"
+                    # An entry with zero real content on either side
+                    # (never translated in Zanata at all) isn't a
+                    # genuine indexing bug: Weblate's own PO export
+                    # writes a single blank msgstr[0] for a plural
+                    # unit with no translated content, regardless of
+                    # the language's true nplurals, since there's
+                    # nothing per-slot to preserve. Flagging that as
+                    # a mismatch produces a false positive for every
+                    # untranslated plural string in every locale and
+                    # buries the real bug this check exists to catch
+                    # - an entry that DID have content losing a slot.
+                    both_fully_empty = (
+                        not any(v.strip() for v in zanata_plurals.values())
+                        and not any(
+                            v.strip() for v in weblate_plurals.values())
                     )
-                    print(f"[ERROR] {error_msg}")
-                    errors.append(error_msg)
-                    entry_mismatched = True
+                    if both_fully_empty:
+                        plural_empty_skipped_count += 1
+                    else:
+                        error_msg = (
+                            f"Plural form count mismatch for msgid: "
+                            f"'{msgid}' msgctxt: '{msgctxt}' "
+                            f"- Zanata indices: "
+                            f"{sorted(zanata_plurals.keys())} "
+                            f"- Weblate indices: "
+                            f"{sorted(weblate_plurals.keys())}"
+                        )
+                        print(f"[ERROR] {error_msg}")
+                        errors.append(error_msg)
+                        entry_mismatched = True
 
                 common_indices = (
                     zanata_plurals.keys() & weblate_plurals.keys()
@@ -1901,6 +1921,17 @@ class WeblateUtils:
                 print(f"[ERROR] {error_msg}")
                 errors.append(error_msg)
                 string_mismatch_count += 1
+
+        if plural_empty_skipped_count:
+            # Printed here (not after the final combined status line
+            # below) since extract_status_reason() only reads the
+            # last printed line of a failed check-sentence-detail
+            # call - this must never become that line.
+            print(
+                f"[INFO] Skipped {plural_empty_skipped_count} "
+                f"untranslated plural entries (empty on both sides) "
+                f"from the mismatch count"
+            )
 
         # Check for entries in Weblate but not in Zanata
         zanata_keys = {(e.msgid, e.msgctxt) for e in zanata_entries}

@@ -306,5 +306,74 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
         self.assertTrue(state['ready'])
 
 
+class WeblateUtilsSentenceDetailTest(unittest.TestCase):
+    def setUp(self):
+        config = SimpleNamespace(
+            token='test-token',
+            base_url='https://weblate.example/',
+        )
+        self.utils = weblate_utils.WeblateUtils(config)
+
+    def _write_po(self, content):
+        po_path = Path(
+            f'{self.id().replace(".", "-")}-{id(content)}'
+        ).with_suffix('.po')
+        self.addCleanup(po_path.unlink, missing_ok=True)
+        po_path.write_text(content, encoding='utf-8')
+        return po_path
+
+    def test_check_sentence_detail_skips_never_translated_plural_entry(self):
+        # Weblate's own PO export writes a single blank msgstr[0] for
+        # a plural unit with no translated content on either side,
+        # regardless of the language's true nplurals - this must not
+        # be flagged as a mismatch (see check_sentence_detail's
+        # both_fully_empty handling).
+        zanata_po = self._write_po(
+            'msgid ""\nmsgstr ""\n'
+            '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"\n\n'
+            'msgid "Batched Item"\nmsgid_plural "Batched Items"\n'
+            'msgstr[0] ""\nmsgstr[1] ""\n'
+        )
+        weblate_po = self._write_po(
+            'msgid ""\nmsgstr ""\n'
+            '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"\n\n'
+            'msgid "Batched Item"\nmsgid_plural "Batched Items"\n'
+            'msgstr[0] ""\n'
+        )
+
+        result = self.utils.check_sentence_detail(
+            'horizon', 'stable-2025.1', 'horizon-django', 'he',
+            str(zanata_po), str(weblate_po),
+        )
+
+        self.assertTrue(result)
+
+    def test_check_sentence_detail_still_flags_lost_plural_content(self):
+        # A plural entry that DID have real translated content losing
+        # a slot is genuine data loss (the kn-locale case this check
+        # exists to catch) and must still fail, even though it hits
+        # the same "index sets differ" branch as the empty case above.
+        zanata_po = self._write_po(
+            'msgid ""\nmsgstr ""\n'
+            '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"\n\n'
+            'msgid "Delete Volume"\nmsgid_plural "Delete Volumes"\n'
+            'msgstr[0] "Translated singular"\n'
+            'msgstr[1] "Translated plural"\n'
+        )
+        weblate_po = self._write_po(
+            'msgid ""\nmsgstr ""\n'
+            '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"\n\n'
+            'msgid "Delete Volume"\nmsgid_plural "Delete Volumes"\n'
+            'msgstr[0] "Translated singular"\n'
+        )
+
+        result = self.utils.check_sentence_detail(
+            'horizon', 'stable-2025.1', 'horizon-django', 'kn',
+            str(zanata_po), str(weblate_po),
+        )
+
+        self.assertFalse(result)
+
+
 if __name__ == '__main__':
     unittest.main()
