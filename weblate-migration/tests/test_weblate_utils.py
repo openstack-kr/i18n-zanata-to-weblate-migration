@@ -181,6 +181,77 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
 
         self.assertTrue(state['ready'])
 
+    def test_create_translation_waits_for_all_plural_units_across_pages(
+            self):
+        po_path = self._write_po(
+            'msgid ""\nmsgstr ""\n'
+            '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"\n\n'
+            'msgid "Delete Volume"\nmsgid_plural "Delete Volumes"\n'
+            'msgstr[0] ""\nmsgstr[1] ""\n'
+            '\nmsgid "Delete Item"\nmsgid_plural "Delete Items"\n'
+            'msgstr[0] ""\nmsgstr[1] ""\n'
+        )
+        page_two_url = (
+            'https://weblate.example/translations/neutron/'
+            'master%252Freleasenotes/fr/units/?q=has%3Aplural&page=2'
+        )
+        state = {
+            'created': False,
+            'page_two_checks': 0,
+            'ready': False,
+        }
+
+        def get_translation(url, headers=None, params=None):
+            if not state['created']:
+                return make_response(404, {'detail': 'Not found.'})
+
+            if url.endswith(
+                    '/translations/neutron/master%252Freleasenotes/fr/'):
+                return make_response(200, {
+                    'total': 2,
+                    'language': {'plural': {'number': 2}},
+                })
+
+            if url == page_two_url:
+                state['page_two_checks'] += 1
+                if state['page_two_checks'] == 1:
+                    target = ['']
+                else:
+                    state['ready'] = True
+                    target = ['', '']
+                return make_response(200, {'results': [{'target': target}]})
+
+            if '/units/' in url:
+                # First page: its own unit is already full, but a
+                # second page (not yet ready) still exists - a
+                # correct implementation must not stop here.
+                return make_response(200, {
+                    'results': [{'target': ['', '']}],
+                    'next': page_two_url,
+                })
+
+            self.fail(f'Unexpected GET: {url}')
+
+        def create_translation(url, json=None, headers=None):
+            state['created'] = True
+            return make_response(201, {})
+
+        with (
+            mock.patch.object(
+                weblate_utils.requests, 'get', side_effect=get_translation
+            ),
+            mock.patch.object(
+                weblate_utils.requests, 'post', side_effect=create_translation
+            ),
+            mock.patch.object(weblate_utils.time, 'sleep'),
+        ):
+            self.utils.create_translation(
+                'neutron', 'master', 'releasenotes', 'fr', str(po_path)
+            )
+
+        self.assertTrue(state['ready'])
+        self.assertGreaterEqual(state['page_two_checks'], 2)
+
     def test_create_component_returns_when_whole_pot_is_imported(self):
         pot_path = Path(self.id().replace('.', '-')).with_suffix('.pot')
         self.addCleanup(pot_path.unlink, missing_ok=True)
@@ -233,6 +304,75 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
 
         self.assertTrue(state['created'])
         self.assertTrue(state['ready'])
+
+
+class WeblateUtilsSentenceDetailTest(unittest.TestCase):
+    def setUp(self):
+        config = SimpleNamespace(
+            token='test-token',
+            base_url='https://weblate.example/',
+        )
+        self.utils = weblate_utils.WeblateUtils(config)
+
+    def _write_po(self, content):
+        po_path = Path(
+            f'{self.id().replace(".", "-")}-{id(content)}'
+        ).with_suffix('.po')
+        self.addCleanup(po_path.unlink, missing_ok=True)
+        po_path.write_text(content, encoding='utf-8')
+        return po_path
+
+    def test_check_sentence_detail_skips_never_translated_plural_entry(self):
+        # Weblate's own PO export writes a single blank msgstr[0] for
+        # a plural unit with no translated content on either side,
+        # regardless of the language's true nplurals - this must not
+        # be flagged as a mismatch (see check_sentence_detail's
+        # both_fully_empty handling).
+        zanata_po = self._write_po(
+            'msgid ""\nmsgstr ""\n'
+            '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"\n\n'
+            'msgid "Batched Item"\nmsgid_plural "Batched Items"\n'
+            'msgstr[0] ""\nmsgstr[1] ""\n'
+        )
+        weblate_po = self._write_po(
+            'msgid ""\nmsgstr ""\n'
+            '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"\n\n'
+            'msgid "Batched Item"\nmsgid_plural "Batched Items"\n'
+            'msgstr[0] ""\n'
+        )
+
+        result = self.utils.check_sentence_detail(
+            'horizon', 'stable-2025.1', 'horizon-django', 'he',
+            str(zanata_po), str(weblate_po),
+        )
+
+        self.assertTrue(result)
+
+    def test_check_sentence_detail_still_flags_lost_plural_content(self):
+        # A plural entry that DID have real translated content losing
+        # a slot is genuine data loss (the kn-locale case this check
+        # exists to catch) and must still fail, even though it hits
+        # the same "index sets differ" branch as the empty case above.
+        zanata_po = self._write_po(
+            'msgid ""\nmsgstr ""\n'
+            '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"\n\n'
+            'msgid "Delete Volume"\nmsgid_plural "Delete Volumes"\n'
+            'msgstr[0] "Translated singular"\n'
+            'msgstr[1] "Translated plural"\n'
+        )
+        weblate_po = self._write_po(
+            'msgid ""\nmsgstr ""\n'
+            '"Plural-Forms: nplurals=2; plural=(n != 1);\\n"\n\n'
+            'msgid "Delete Volume"\nmsgid_plural "Delete Volumes"\n'
+            'msgstr[0] "Translated singular"\n'
+        )
+
+        result = self.utils.check_sentence_detail(
+            'horizon', 'stable-2025.1', 'horizon-django', 'kn',
+            str(zanata_po), str(weblate_po),
+        )
+
+        self.assertFalse(result)
 
 
 if __name__ == '__main__':
