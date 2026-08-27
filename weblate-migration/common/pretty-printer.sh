@@ -340,6 +340,68 @@ function categorize_failure_reason() {
         echo "서버 오류(500)"
         return
     fi
+
+    # --- Stage 05: check_* accuracy-check failures ---
+    if [[ "$text" == *"Component/locale does not exist"* ]]; then
+        echo "PO 파일 없음"
+        return
+    fi
+    local fuzzy_n
+    fuzzy_n=$(echo "$text" | grep -oP 'Untranslated count increased by \K[0-9]+')
+    if [ -n "$fuzzy_n" ]; then
+        local fuzzy_a fuzzy_b
+        fuzzy_a=$(echo "$text" | grep -oP 'zanata=\K[0-9]+(?= -> weblate=)')
+        fuzzy_b=$(echo "$text" | grep -oP -- '-> weblate=\K[0-9]+')
+        echo "미번역 증가 (${fuzzy_a}→${fuzzy_b}, +${fuzzy_n})"
+        return
+    fi
+    if [[ "$text" == *"sentence count mismatch:"* ]]; then
+        local count_a count_b
+        count_a=$(echo "$text" | grep -oP '\K[0-9]+(?=\(zanata\))')
+        count_b=$(echo "$text" | grep -oP '\K[0-9]+(?=\(weblate\))')
+        echo "문장 수 불일치 (${count_a}≠${count_b})"
+        return
+    fi
+    if [[ "$text" == *"Sentence detail check completed with issues:"* ]]; then
+        # check_sentence_detail() prints one final combined line with
+        # all four counts always present (never conditionally), so
+        # a locale that fails on more than one of them doesn't have
+        # one silently overwritten by the others - only the very last
+        # printed line survives into this function's input.
+        local string_n plural_n missing_n extra_n
+        string_n=$(echo "$text" | grep -oP 'string=\K[0-9]+')
+        plural_n=$(echo "$text" | grep -oP 'plural=\K[0-9]+')
+        missing_n=$(echo "$text" | grep -oP 'missing=\K[0-9]+')
+        extra_n=$(echo "$text" | grep -oP 'extra=\K[0-9]+')
+        local parts=()
+        [ -n "$string_n" ] && [ "$string_n" != "0" ] &&
+            parts+=("번역문 불일치 ${string_n}건")
+        [ -n "$plural_n" ] && [ "$plural_n" != "0" ] &&
+            parts+=("복수형 슬롯 불일치 ${plural_n}건")
+        [ -n "$missing_n" ] && [ "$missing_n" != "0" ] &&
+            parts+=("Weblate 누락 ${missing_n}건")
+        [ -n "$extra_n" ] && [ "$extra_n" != "0" ] &&
+            parts+=("Weblate 추가 ${extra_n}건")
+        # "${parts[*]}" under IFS=',' would join with "," alone - $*
+        # expansion only ever uses IFS's *first character* as the
+        # separator, so a multi-character IFS like ', ' silently
+        # collapses to just ','. printf+strip is the reliable way to
+        # join with a real ", " separator.
+        local joined
+        joined=$(printf '%s, ' "${parts[@]}")
+        echo "${joined%, }"
+        return
+    fi
+    if [[ "$text" == *"Placeholder consistency check completed with issues:"* ]]; then
+        local placeholder_n
+        placeholder_n=$(echo "$text" | grep -oP 'mismatches=\K[0-9]+')
+        echo "플레이스홀더 불일치 (${placeholder_n}건)"
+        return
+    fi
+    if [[ "$text" == *"msgfmt:"* ]]; then
+        echo "PO 포맷 오류"
+        return
+    fi
 }
 
 # Pull a short, human-readable failure reason (plus a retry-count
