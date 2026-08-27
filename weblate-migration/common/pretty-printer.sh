@@ -285,17 +285,78 @@ function run_tagged_quiet() {
     return "$exit_code"
 }
 
-# Pull a short "<status> <reason>" (plus a retry-count suffix, if any)
-# out of a weblate_utils.py CLI failure's last printed line, for a
-# tree leaf's one-line failure summary. _retry_on_status
-# (common/weblate_utils.py) always ends a failed call with one of:
+# Map a failure line to a short, human-readable Korean category label
+# (with any relevant numbers folded in) - see
+# ~/claude-docs/weblate-migration/failure-reason-categorization/plan.md
+# for the log-frequency evidence and design behind every entry here.
+# Covers two very different kinds of failure line, both ending up in
+# the same tree leaf via extract_status_reason():
+#   - Stage 04 (create_weblate_components.sh) Weblate REST API
+#     failures: matched on the "code"/detail substrings
+#     _retry_on_status leaves in the raw line (e.g.
+#     {"errors":[{"code":"invalid","detail":"..."}]}). The console
+#     tree used to show only "<status> <code>" (e.g. "400 invalid"),
+#     which collapses several unrelated root causes into one string.
+#   - Stage 05 (05-test-accuracy/test.sh) check_* accuracy-check
+#     failures: these never go through _retry_on_status (no HTTP
+#     status/JSON code at all), so before this function existed they
+#     always fell through to the plain 60-char truncation below -
+#     worse than Stage 04's problem, since not even which check failed
+#     was visible.
+# Returns empty (no match) rather than guessing, so an unrecognized
+# pattern falls through to the code/truncation fallback below instead
+# of being silently mis-labeled - add a new case here once a real log
+# shows the pattern (this is the "whitelist + fallback" design from
+# the plan, not an attempt to cover every possible message).
+function categorize_failure_reason() {
+    local text="$1"
+
+    # --- Stage 04: Weblate REST API failures ---
+    if [[ "$text" == *"Could not add '"* ]]; then
+        echo "번역 생성 거부됨"
+        return
+    fi
+    if [[ "$text" == *"Plural forms do not match the language."* ]]; then
+        echo "Plural-Forms 헤더 불일치"
+        return
+    fi
+    if [[ "$text" == *"duplicate key value violates unique constraint"* ]]; then
+        echo "중복 키 충돌"
+        return
+    fi
+    if [[ "$text" == *'"code":"not_found"'* ]]; then
+        echo "찾을 수 없음(404)"
+        return
+    fi
+    if [[ "$text" == *"connection failed: connection to server at"* ]]; then
+        echo "DB 연결 실패"
+        return
+    fi
+    if [[ "$text" == *"Language with this language code was not found."* ]]; then
+        echo "언어 미등록"
+        return
+    fi
+    if [[ "$text" == *"Server Error (500)"* ]]; then
+        echo "서버 오류(500)"
+        return
+    fi
+}
+
+# Pull a short, human-readable failure reason (plus a retry-count
+# suffix, if any) out of a weblate_utils.py CLI failure's last printed
+# line, for a tree leaf's one-line failure summary. Tries
+# categorize_failure_reason()'s whitelist first (see its own comment);
+# falls back to the old "<status> <code>"/truncated-raw-line behavior
+# for anything not yet in that whitelist, so an unrecognized new
+# pattern is still visible (just not as nicely labeled) rather than
+# silently dropped. _retry_on_status (common/weblate_utils.py) always
+# ends a failed call with one of:
 #   "[ERROR] {action} rejected (<code>), not retrying: <body>"
 #   "[ERROR] {action} failed after <n> attempts (<code>): <body>"
 # and <body> is often JSON with a "code" field (e.g.
-# {"errors":[{"code":"not_found",...}]}). Falls back to a truncated
-# copy of the raw line when neither pattern matches - not every
-# failure in create_weblate_components.sh's loop goes through
-# _retry_on_status (e.g. lang_plural_check.py doesn't).
+# {"errors":[{"code":"not_found",...}]}) - not every failure in
+# create_weblate_components.sh's loop goes through _retry_on_status
+# though (e.g. lang_plural_check.py doesn't, nor do check_* calls).
 #
 # Depends on PCRE support in `grep -P` (GNU grep built with
 # --enable-perl-regexp, the default on Debian/Ubuntu - see
@@ -313,6 +374,14 @@ function extract_status_reason() {
     if [ -n "$attempts" ]; then
         retry_suffix=" (${attempts}회 재시도 후)"
     fi
+
+    local category
+    category=$(categorize_failure_reason "$text")
+    if [ -n "$category" ]; then
+        echo "${category}${retry_suffix}"
+        return
+    fi
+
     if [ -n "$status" ] && [ -n "$reason" ]; then
         echo "${status} ${reason}${retry_suffix}"
     elif [ -n "$status" ]; then
