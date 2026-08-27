@@ -25,7 +25,7 @@ import sys
 import time
 import traceback
 from typing import Callable
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 import zipfile
 import polib
 import requests
@@ -717,6 +717,80 @@ class WeblateUtils:
               f"{retry_count} attempts: {last_detail}")
         sys.exit(1)
 
+    def _wait_for_translation_plural_ready(
+        self,
+        translation_url: str,
+        locale: str,
+        retry_count: int = 60,
+        sleep_time: int = 5,
+    ) -> None:
+        """Wait until this translation's plural units have full slots.
+
+        Weblate populates a translation's units asynchronously (see
+        _wait_for_translation_source_units), and that wait only
+        checks the *number* of source units, not whether each
+        plural-capable unit's target array has already reached the
+        language's full plural count. Call only when the caller
+        already knows (from the po file about to be uploaded) that
+        this translation has at least one plural entry - otherwise a
+        component with no plural strings would never find one and
+        would spin for the entire retry budget.
+
+        :param translation_url: translation API URL (already known to
+            exist by the time this is called)
+        :param locale: locale label used in log and error messages
+        :param retry_count: number of status checks before giving up
+        :param sleep_time: seconds to sleep between status checks
+        :returns: None
+        """
+        assert retry_count >= 1, "retry_count must allow at least one attempt"
+
+        response = self._get_with_retry(
+            translation_url,
+            success=lambda r: r.status_code == 200,
+            action='Get translation for plural readiness check',
+        )
+        nplurals = response.json()['language']['plural']['number']
+        if nplurals <= 1:
+            return
+
+        units_url = urljoin(
+            translation_url,
+            'units/?' + urlencode({'q': 'has:plural', 'page_size': 1}),
+        )
+        last_detail = "no plural unit found yet"
+
+        for cnt in range(retry_count):
+            response = self._get(units_url)
+            if response.status_code == 200:
+                results = response.json().get('results', [])
+                if results:
+                    target_len = len(results[0].get('target', []))
+                    if target_len == nplurals:
+                        print(f"[INFO] Plural slots ready: {locale} "
+                              f"({target_len}/{nplurals})")
+                        return
+                    last_detail = (
+                        f"plural unit has {target_len}/{nplurals} slots")
+                else:
+                    last_detail = "no plural unit found yet"
+            elif not is_retryable_status(response.status_code):
+                print(f"[ERROR] Failed while waiting for plural slots "
+                      f"{locale}: HTTP {response.status_code}: "
+                      f"{response.text}")
+                sys.exit(1)
+            else:
+                last_detail = f"HTTP {response.status_code}: {response.text}"
+
+            if cnt + 1 < retry_count:
+                print(f"[INFO] Waiting for plural slots: {locale} "
+                      f"({last_detail})")
+                time.sleep(sleep_time)
+
+        print(f"[ERROR] Timed out waiting for plural slots {locale} after "
+              f"{retry_count} attempts: {last_detail}")
+        sys.exit(1)
+
     def _wait_for_component_source(
         self,
         project_name: str,
@@ -985,7 +1059,8 @@ class WeblateUtils:
             project_name: str,
             category_name: str,
             component_name: str,
-            locale: str
+            locale: str,
+            po_path: str
     ) -> None:
         """Create a new translation
 
@@ -996,13 +1071,32 @@ class WeblateUtils:
         their own shortly (e.g. another write to the same component
         was still in progress).
 
+        _wait_for_translation_source_units() only confirms the
+        translation has *some* source units - it says nothing about
+        whether a plural-capable unit's target array has already been
+        sized to the language's full plural count, or is still a
+        shorter, not-yet-finished placeholder. Uploading against a
+        not-yet-finished unit silently and permanently drops any
+        plural form beyond what existed at that moment (see
+        upload_po_file()'s docstring on 'translate' only filling
+        existing slots). If po_path has any plural entries, this also
+        waits for that to settle before returning - see
+        _wait_for_translation_plural_ready().
+
         :param project_name: The name of the project
         :param category_name: The name of the category
         :param component_name: The name of the component
         :param locale: The locale of the translation
+        :param po_path: Path to the po file about to be uploaded for
+            this locale - used only to check whether it has any
+            plural entries worth waiting on
         """
 
         locale = sanitize_locale(locale)
+        po = polib.pofile(po_path)
+        has_plural = any(
+            entry.msgid_plural for entry in po if not entry.obsolete)
+
         path = (f'translations/{sanitize_slug(project_name)}/'
                 f'{sanitize_slug(category_name)}%252F'
                 f'{sanitize_slug(component_name)}/'
@@ -1017,6 +1111,9 @@ class WeblateUtils:
         if response.status_code == 200:
             self._wait_for_translation_source_units(
                 translation_url, locale)
+            if has_plural:
+                self._wait_for_translation_plural_ready(
+                    translation_url, locale)
             print("[INFO] Translation already exists: ", locale)
             return
 
@@ -1036,6 +1133,8 @@ class WeblateUtils:
             action='Create translation',
         )
         self._wait_for_translation_source_units(translation_url, locale)
+        if has_plural:
+            self._wait_for_translation_plural_ready(translation_url, locale)
         print("[INFO] Translation created: ", locale)
 
     def upload_po_file(
@@ -1948,6 +2047,9 @@ def setup_argument_parser():
         '--component', required=True, help='Name of the component')
     create_translation_parser.add_argument(
         '--locale', required=True, help='Name of the locale')
+    create_translation_parser.add_argument(
+        '--po-path', required=True,
+        help='Path to the po file about to be uploaded for this locale')
     # Upload PO file command
     upload_po_file_parser = subparser.add_parser(
         'upload-po-file', help='Upload a new po file')
@@ -2113,7 +2215,8 @@ def main():
             utils.create_glossary(args.project)
         elif args.command == 'create-translation':
             utils.create_translation(
-                args.project, args.category, args.component, args.locale)
+                args.project, args.category, args.component, args.locale,
+                args.po_path)
         elif args.command == 'upload-po-file':
             utils.upload_po_file(
                 args.project, args.category, args.component, args.locale,

@@ -126,7 +126,8 @@ function create_weblate_components {
                     --project $PROJECT \
                     --category $ZANATA_VERSION \
                     --component $component \
-                    --locale $locale; then
+                    --locale $locale \
+                    --po-path $translation_path; then
                 had_failure=1
                 failed_locale_lines+=("$(printf '%-8s%-20s%s' "$locale" "create-translation" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
