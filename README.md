@@ -84,6 +84,7 @@ cd weblate-migration
 | [`weblate-migration/README.md`](weblate-migration/README.md) | 도구의 폴더 구조, 워크스페이스 레이아웃, 로그 형식 원문 (영문) |
 | [`docs/horizon-test.md`](docs/horizon-test.md) | Horizon 프로젝트 실제 마이그레이션 검증 사례와 발견된 문제 유형 |
 | [`docs/enhance-migration-accuracy.md`](docs/enhance-migration-accuracy.md) | 정확도 테스트(5단계)를 더 엄밀하게 만들기 위한 개선 방향 |
+| [`docs/accury-test-issues.md`](docs/accury-test-issues.md) | 정확도 테스트를 수행하면서 겪은 주요 이슈들 |
 | [`language/README.md`](language/README.md) | 언어(로케일) 설정 동기화 스크립트 사용법 (영문) |
 
 ## Contributing
