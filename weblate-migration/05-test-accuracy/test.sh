@@ -67,10 +67,19 @@ function test_accuracy {
             local locale=$(extract_locale_from_path $translation_path)
             CURRENT_LOCALE="$locale"
 
-            # the directory name did not support .,
-            # so we need to replace . with -
+            # The downloaded/extracted directory tree mirrors Weblate's
+            # own project slug (see sanitize_slug() in
+            # common/weblate_utils.py, used when the project/component
+            # were created and when the export was downloaded), where
+            # a project name like "oslo.cache" becomes "oslo-cache" -
+            # dots (and other characters Weblate slugs don't allow)
+            # are replaced with -. $PROJECT itself is never sanitized,
+            # so without this, a dotted project name would look for
+            # its PO files under the raw (never-created) $PROJECT
+            # directory and always report every locale as missing.
             local version_dir=${ZANATA_VERSION//./-}
-            local weblate_po_path=$(get_po_path $component $locale $TEST_DIR/$PROJECT/$version_dir true)
+            local project_slug=${PROJECT//./-}
+            local weblate_po_path=$(get_po_path $component $locale $TEST_DIR/$project_slug/$version_dir true)
 
             log_quiet "[INFO] Step 1/6: Check the component/locale existence..."
             if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py check-translation-existence \
