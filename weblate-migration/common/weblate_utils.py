@@ -961,7 +961,21 @@ class WeblateUtils:
                 'source_language': 'en_US',
                 "is_glossary": True,
             }
-            _ = self._post(url=url, data=data, raise_error=True)
+            create_response = self._post(url=url, data=data)
+            if create_response.status_code == 404:
+                # The project itself isn't visible at this endpoint
+                # (e.g. create-project silently no-op'd because a
+                # misconfigured WEBLATE_URL turned its POST into a
+                # GET on redirect). Not fatal on its own - skip the
+                # glossary rather than aborting the whole project
+                # migration over it.
+                print("[INFO] Skipping glossary creation: "
+                      f"project not found: {project_name}")
+                return
+            if create_response.status_code >= 400:
+                print("[ERROR] Failed to create glossary: ",
+                      json.dumps(create_response.json()))
+                sys.exit(1)
 
             print("[INFO] Glossary created.")
         else:
