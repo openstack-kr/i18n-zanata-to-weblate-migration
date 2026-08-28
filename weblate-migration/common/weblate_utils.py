@@ -435,6 +435,33 @@ class WeblateUtils:
               f"{last_exception}")
         sys.exit(1)
 
+    def _reject_redirect(self, response: requests.Response) -> None:
+        """Raise a clear, immediate error if the server tried to redirect.
+
+        Redirects are never followed for API calls (every request
+        below passes allow_redirects=False) - a 3xx response here
+        almost always means WEBLATE_URL's scheme/host doesn't match
+        the server's canonical one (e.g. http:// where the server
+        enforces https://). Silently following it is actively
+        harmful: requests demotes POST to GET on a 301/302 redirect,
+        so a "create" call turns into a read against a different
+        endpoint instead of failing - the resulting confusion showed
+        up as an unrelated-looking 404 in create_glossary() and an
+        uncaught JSONDecodeError in upload_po_file(), both really
+        this same misconfiguration.
+
+        :param response: the response to check
+        :raises: requests.exceptions.HTTPError if the response is a
+            redirect (3xx)
+        """
+        if 300 <= response.status_code < 400:
+            location = response.headers.get('Location', '<no Location header>')
+            raise requests.exceptions.HTTPError(
+                f"{response.status_code} redirect to {location} - not "
+                "following (check WEBLATE_URL's scheme/host)",
+                response=response,
+            )
+
     def _get(self, url, params=None, raise_error=False) -> requests.Response:
         """Get query to request
 
@@ -459,7 +486,10 @@ class WeblateUtils:
         :returns: requests.Response
         """
         def do_get():
-            response = requests.get(url, headers=self._headers, params=params)
+            response = requests.get(
+                url, headers=self._headers, params=params,
+                allow_redirects=False)
+            self._reject_redirect(response)
             if raise_error:
                 response.raise_for_status()
             return response
@@ -508,10 +538,14 @@ class WeblateUtils:
                     if hasattr(fileobj, 'seek'):
                         fileobj.seek(0)
                 response = requests.post(
-                    url, data=data, files=file, headers=self._headers)
+                    url, data=data, files=file, headers=self._headers,
+                    allow_redirects=False)
             else:
-                response = requests.post(url, json=data, headers=self._headers)
+                response = requests.post(
+                    url, json=data, headers=self._headers,
+                    allow_redirects=False)
 
+            self._reject_redirect(response)
             if raise_error:
                 response.raise_for_status()
 
