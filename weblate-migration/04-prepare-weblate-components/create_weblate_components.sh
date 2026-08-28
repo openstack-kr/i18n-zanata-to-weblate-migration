@@ -55,7 +55,7 @@ function create_weblate_components {
         exit 1
     fi
 
-    tree_line "⏳ 컴포넌트 생성 진행중..."
+    tree_line "⏳ Creating components..."
 
     # phase 2: creation and translations used to be two separate
     # passes over COMPONENTS (create every component first, then
@@ -89,7 +89,7 @@ function create_weblate_components {
                 --component $component \
                 --pot-path $pot_path; then
             had_failure=1
-            tree_line "$(printf '%s ✗ %-28s (컴포넌트 생성 실패)' "$component_connector" "$component")"
+            tree_line "$(printf '%s ✗ %-28s (component creation failed)' "$component_connector" "$component")"
             tree_line "$(printf '%s└─ ✗ %s' "$child_prefix" "$(printf '%-8s%-20s%s' "-" "create-component" "$(extract_status_reason "$LAST_TAGGED_LINE")")")"
             continue
         fi
@@ -112,7 +112,7 @@ function create_weblate_components {
         # replaces it in place via tree_line_update(), so a component
         # with many locales (each an API round-trip, sometimes with
         # retry sleeps) shows live movement instead of sitting silent
-        # under "⏳ 컴포넌트 생성 진행중..." until every one finishes.
+        # under "⏳ Creating components..." until every one finishes.
         if [ "$total_locales" -gt 0 ]; then
             tree_line "$(component_progress_text "$component_connector" "$component" 0 "$total_locales" 0)"
         fi
@@ -181,7 +181,7 @@ function create_weblate_components {
             # No progress line was ever printed for this component (see
             # the `total_locales -gt 0` guard above it), so there's
             # nothing to update - a fresh line, like before.
-            tree_line "$(printf '%s %s %-28s (번역 파일 없음)' "$component_connector" "$component_symbol" "$component")"
+            tree_line "$(printf '%s %s %-28s (no translation file)' "$component_connector" "$component_symbol" "$component")"
         else
             # Replaces the last progress line instead of appending a
             # new one - see component_progress_text() in

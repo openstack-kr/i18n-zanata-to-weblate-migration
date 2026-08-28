@@ -28,7 +28,7 @@ function test_accuracy {
     run_tagged_quiet unzip -o $PROJECT.zip
     rm -f $PROJECT.zip
 
-    tree_line "⏳ 정확도 테스트 진행중..."
+    tree_line "⏳ Running accuracy test..."
 
     local total_components=${#COMPONENTS[@]}
     local component_index=0
@@ -195,7 +195,7 @@ function test_accuracy {
             component_symbol="✗"
         fi
         if [ "$total_locales" -eq 0 ]; then
-            tree_line "$(printf '%s %s %-28s (테스트할 번역 파일 없음)' "$component_connector" "$component_symbol" "$component")"
+            tree_line "$(printf '%s %s %-28s (no translation file to test)' "$component_connector" "$component_symbol" "$component")"
         else
             tree_line_update "$(printf '%s %s %-28s %d/%d' "$component_connector" "$component_symbol" "$component" "$success_count" "$total_locales")"
         fi

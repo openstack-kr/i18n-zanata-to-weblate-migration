@@ -60,29 +60,29 @@ log_quiet "[INFO] WEBLATE_URL and WEBLATE_TOKEN are set"
 
 # Printed once so a long silent stretch during a slow stage (e.g. pip
 # installs, a big git clone) doesn't read as the run having hung -
-# without this, all a person sees between "⏳ 진행중" and the next
+# without this, all a person sees between "⏳ In progress" and the next
 # status line is nothing, with no way to tell "still working" from
 # "stuck". No status symbol of its own, so it renders uncolored (see
 # migration_projects.sh's tree dispatch).
-tree_line "다음 5단계 진행 예정: 환경설정 → 클론 → POT 생성 → 컴포넌트 생성 → 정확도 테스트"
+tree_line "Next 5 stages: Setup environment → Clone → Generate POT → Create components → Accuracy test"
 
 stage "Setup environment and prepare workspace"
-tree_line "⏳ 환경설정 진행중..."
+tree_line "⏳ Setting up environment..."
 if ! setup_env_and_prepare_workspace "$PROJECT"; then
     tagged_colorize "$RED" "[ERROR] Failed to setup environment and prepare workspace: $FATAL_REASON"
     exit 1
 fi
 endstage
-tree_line_update "✓ 환경설정 완료"
+tree_line_update "✓ Environment setup complete"
 
 stage "Clone $PROJECT project"
-tree_line "⏳ 클론 진행중..."
+tree_line "⏳ Cloning..."
 if ! clone_project "$PROJECT" "$ZANATA_VERSION"; then
     tagged_colorize "$RED" "[ERROR] Failed to clone $PROJECT project: $FATAL_REASON"
     exit 1
 fi
 endstage
-tree_line_update "✓ 클론 완료"
+tree_line_update "✓ Clone complete"
 
 # NOTE: POT generation (setup_*, which writes zanata.xml) and the Zanata
 # export (pull_translation_files) are kept in a single stage here rather
@@ -96,7 +96,7 @@ tree_line_update "✓ 클론 완료"
 # arms; both are out of scope for this consistency-only change. See
 # phase-1 result doc for details.
 stage "Generate POT and export translations from Zanata"
-tree_line "⏳ POT 생성 진행중..."
+tree_line "⏳ Generating POT..."
 case $PROJECT in
     api-site)
         setup_manuals
@@ -169,7 +169,7 @@ if [ -n "${MIGRATION_COMPONENTS:-}" ]; then
 fi
 log_quiet "[INFO] Components to migrate: ${COMPONENTS[*]}"
 endstage
-tree_line_update "✓ POT 생성 완료 (컴포넌트 ${#COMPONENTS[@]}개: ${COMPONENTS[*]})"
+tree_line_update "✓ POT generation complete (${#COMPONENTS[@]} components: ${COMPONENTS[*]})"
 
 stage "Create Weblate components"
 # Kept as a flag rather than exiting immediately: a partial failure

@@ -16,9 +16,9 @@ source "$(dirname "$0")/common/pretty-printer.sh"
 
 # Check the usage of the script
 if [ $# -eq 0 ]; then
-    echo "사용법: $0 <list_file> [version_file]"
-    echo "예시: $0 list.txt"
-    echo "예시: $0 list.txt version.txt"
+    echo "Usage: $0 <list_file> [version_file]"
+    echo "Example: $0 list.txt"
+    echo "Example: $0 list.txt version.txt"
     exit 1
 fi
 
@@ -53,8 +53,8 @@ print_tree_content() {
     elif [[ "$tree_content" == *"✓"* ]]; then
         colorize "$GREEN" "$tree_content"
     else
-        # A plain informational line (e.g. the "다음 5단계 진행 예정:
-        # ..." roadmap) with no status symbol of its own - print as-is,
+        # A plain informational line (e.g. the "Next 5 stages: ..."
+        # roadmap) with no status symbol of its own - print as-is,
         # neither red/yellow/green nor forced green by default like a
         # real success line would be.
         echo "$tree_content"
@@ -113,8 +113,8 @@ if [ "$total_pairs" -eq 0 ]; then
     total_pairs=1
 fi
 
-# Convert a whole number of seconds into a short Korean duration
-# string for the ETA display.
+# Convert a whole number of seconds into a short duration string for
+# the ETA display.
 format_duration() {
     local total_seconds=$1
     local hours=$((total_seconds / 3600))
@@ -122,11 +122,11 @@ format_duration() {
     local seconds=$((total_seconds % 60))
 
     if [ "$hours" -gt 0 ]; then
-        echo "${hours}시간 ${minutes}분"
+        echo "${hours}h ${minutes}m"
     elif [ "$minutes" -gt 0 ]; then
-        echo "${minutes}분 ${seconds}초"
+        echo "${minutes}m ${seconds}s"
     else
-        echo "${seconds}초"
+        echo "${seconds}s"
     fi
 }
 
@@ -179,17 +179,17 @@ while IFS= read -r project || [ -n "$project" ]; do
             avg_seconds=$((total_elapsed / completed_items))
             remaining_items=$((total_pairs - total_count + 1))
             eta_seconds=$((avg_seconds * remaining_items))
-            eta_display="예상 남은 시간: $(format_duration "$eta_seconds")"
+            eta_display="Estimated time remaining: $(format_duration "$eta_seconds")"
         else
             # No item has finished yet in this run, so there's no
             # average processing time to base an estimate on.
-            eta_display="예상 남은 시간: 계산 중..."
+            eta_display="Estimated time remaining: calculating..."
         fi
-        echo "[$total_count/$total_pairs] (${percent}%) 처리 중: '$project' (버전: $version) ($eta_display)"
+        echo "[$total_count/$total_pairs] (${percent}%) Processing: '$project' (version: $version) ($eta_display)"
         # Tree root (phase 2): replaces the old "=== Project: X ==="
         # header - one root line per (project, version), closed below
         # once migration_exit_code is known.
-        colorize "$YELLOW" "$project / $version  ⏳ 진행중"
+        colorize "$YELLOW" "$project / $version  ⏳ In progress"
         item_start_epoch=$(date +%s)
 
         # path for log files
@@ -214,7 +214,7 @@ while IFS= read -r project || [ -n "$project" ]; do
         # exit code of MIGRATION_SCRIPT, and must be read immediately
         # after the pipeline, before any other command runs.
         # Tracks whether the most recent line actually printed to the
-        # console was specifically a "⏳ ... 진행중" tree_line() - the
+        # console was specifically a "⏳ ... In progress" tree_line() - the
         # only thing a following tree_line_update() is ever meant to
         # overwrite. Reset to 0 by every other console-visible line
         # (any other TREE_MARKER content, or the fallback echo branch);
@@ -262,7 +262,7 @@ while IFS= read -r project || [ -n "$project" ]; do
                 if [ "$IS_TTY" -eq 1 ]; then
                     if [ "$last_line_was_tree_start" -eq 1 ]; then
                         # Cursor up one line + clear it, so this prints
-                        # on top of the "⏳ ... 진행중" line
+                        # on top of the "⏳ ... In progress" line
                         # tree_line_update() is meant to replace,
                         # instead of appending a new one. Skipped if
                         # the adjacency invariant doesn't hold (see

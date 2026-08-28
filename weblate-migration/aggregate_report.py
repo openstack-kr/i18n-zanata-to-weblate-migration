@@ -46,18 +46,20 @@ from weblate_utils import (  # noqa: E402
 # accuracy failure as "success, cleanup reached" instead of surfacing
 # the actual failure.
 STAGE_MARKERS = [
-    ('env_check', '[INFO] Check variables', '환경변수 확인 실패'),
-    ('setup', '# Setup environment and prepare workspace', '환경설정 실패'),
-    ('clone', '# Clone ', 'clone 실패'),
+    ('env_check', '[INFO] Check variables',
+     'Environment variable check failed'),
+    ('setup', '# Setup environment and prepare workspace',
+     'Environment setup failed'),
+    ('clone', '# Clone ', 'Clone failed'),
     ('pot', '# Generate POT and export translations from Zanata',
-     'POT 생성/Zanata export 실패'),
+     'POT generation/Zanata export failed'),
     ('weblate_component', '# Create Weblate components',
-     'Weblate 컴포넌트 생성 실패'),
-    ('accuracy', '# Start Accuracy Test', '정합성 불일치'),
+     'Weblate component creation failed'),
+    ('accuracy', '# Start Accuracy Test', 'Accuracy mismatch'),
 ]
 STAGE_LABELS = {key: label for key, _, label in STAGE_MARKERS}
 UNKNOWN_STAGE = 'unknown'
-STAGE_LABELS[UNKNOWN_STAGE] = '알 수 없음 (로그 확인 필요)'
+STAGE_LABELS[UNKNOWN_STAGE] = 'Unknown (check log)'
 
 # The merged entry's 'status' field (derived by
 # common/weblate_utils.py reduce_result_events) can be 'pass', 'fail',
@@ -65,7 +67,7 @@ STAGE_LABELS[UNKNOWN_STAGE] = '알 수 없음 (로그 확인 필요)'
 # meaning only one of count/detail check ran (e.g. the run was killed
 # between them), which is not the same as a confirmed mismatch and
 # must not be reported under the same accuracy-mismatch stage label.
-ACCURACY_INCOMPLETE_LABEL = '정합성 확인 미완료'
+ACCURACY_INCOMPLETE_LABEL = 'Accuracy check incomplete'
 
 
 def classify_stage(project_log_path, project, version):
@@ -430,12 +432,11 @@ def main():
         print_table(rows)
 
     if args.report_md:
-        # Stage labels (e.g. STAGE_LABELS values) are Korean text, so
-        # this must not fall back to the platform's locale encoding
+        # Match the explicit encoding='utf-8' used by every other file
+        # I/O in this module (load_result_events, classify_stage),
+        # rather than falling back to the platform's locale encoding
         # (ASCII under LANG=C/POSIX) the way Path.write_text() does by
-        # default - match the explicit encoding='utf-8' used by every
-        # other file I/O in this module (load_result_events,
-        # classify_stage).
+        # default.
         Path(args.report_md).write_text(markdown_text, encoding='utf-8')
 
 
