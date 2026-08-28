@@ -18,7 +18,6 @@ from pathlib import Path
 import sys
 import tomllib
 
-
 DJANGO_PROJECT_SUFFIXES = (
     '-dashboard',
     'horizon',  # to match horizon and *-horizon
@@ -36,6 +35,8 @@ def get_args():
                         help='Type of modules to search (default: python).')
     parser.add_argument('-f', '--file', default='setup.cfg',
                         help='Path of setup.cfg file.')
+    parser.add_argument('--pot-dir',
+                        help='Directory containing pulled POT files.')
     return parser.parse_args()
 
 
@@ -98,7 +99,29 @@ def get_translate_options(config, target):
     return translate_options.get('%s_modules' % target, [])
 
 
-def get_valid_modules(config, project, target):
+def get_django_pot_modules(pot_dir):
+    if not pot_dir:
+        return []
+
+    pot_dir = Path(pot_dir)
+    module_names = []
+    for pot_path in sorted(pot_dir.glob('*/locale/*.pot')):
+        if pot_path.name not in ('django.pot', 'djangojs.pot'):
+            continue
+        module_name = pot_path.parent.parent.name
+        if module_name not in module_names:
+            module_names.append(module_name)
+    return module_names
+
+
+def get_valid_modules(config, project, target, pot_dir=None):
+    if target == 'django' and pot_dir:
+        modules = get_django_pot_modules(pot_dir)
+        if not modules:
+            print('Django module not found in pulled POT paths for project '
+                  '"%s".' % project, file=sys.stderr)
+        return modules
+
     is_django = any(project.endswith(suffix)
                     for suffix in DJANGO_PROJECT_SUFFIXES)
     if is_django != (target == 'django'):
@@ -137,7 +160,7 @@ def get_valid_modules(config, project, target):
     ]
 
     # get all modules
-    modules = list(set(
+    modules = list(dict.fromkeys(
         modules_files + modules_toml_options + modules_toml_tool +
         modules_toml_tool_find
     ))
@@ -161,12 +184,14 @@ def main():
     args = get_args()
     config = read_config(args.file)
 
-    if 'openstack_translations' in config:
+    if ('openstack_translations' in config and
+            not (args.target == 'django' and args.pot_dir)):
         translate_options = get_translate_options(config, args.target)
         print(' '.join(translate_options))
         return
 
-    modules = get_valid_modules(config, args.project, args.target)
+    modules = get_valid_modules(
+        config, args.project, args.target, args.pot_dir)
 
     if modules:
         print(' '.join(modules))

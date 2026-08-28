@@ -112,17 +112,42 @@ function find_legacy_pot_module_name {
     return 1
 }
 
+# Find the module directory that uniquely contains a pulled POT file. This
+# covers projects whose repository slug is unrelated to the Django module
+# name, such as networking-bgpvpn -> bgpvpn_dashboard. Multiple matches are
+# left unresolved because those projects use module-qualified component names
+# such as horizon-django instead of the generic django component.
+function find_unique_pulled_pot_module_name {
+    local pot_filename=$1
+    local pot_dir=$2
+    local matches=()
+
+    mapfile -t matches < <(
+        find "$pot_dir" -mindepth 3 -maxdepth 3 -type f \
+            -path "*/locale/$pot_filename" -print 2>/dev/null | sort
+    )
+
+    if [ ${#matches[@]} -eq 1 ]; then
+        basename "$(dirname "$(dirname "${matches[0]}")")"
+        return 0
+    fi
+
+    return 1
+}
+
 # Resolve which on-disk package directory actually holds a component's
 # pot file: the current package name if its pot file exists, otherwise
 # the first legacy name whose pot file exists (see
-# find_legacy_pot_module_name), otherwise the current package name
-# unchanged (so callers keep reporting "no translation file" exactly as
-# before when neither exists).
+# find_legacy_pot_module_name), otherwise the unique module found in the
+# pulled POT tree. If none of those resolve the file, return the current
+# package name unchanged so callers retain their existing missing-file
+# behavior.
 function resolve_project_package_name {
     local pot_filename=$1
     local pot_dir=${2:-$HOME/$WORKSPACE_NAME/projects/$PROJECT/pot}
     local project_package_name=$(get_project_package_name $PROJECT)
     local legacy_name
+    local pulled_module_name
 
     if [ -f "$pot_dir/$project_package_name/locale/$pot_filename" ]; then
         echo "$project_package_name"
@@ -132,6 +157,14 @@ function resolve_project_package_name {
     legacy_name=$(find_legacy_pot_module_name "$pot_filename" "$pot_dir")
     if [ -n "$legacy_name" ]; then
         echo "$legacy_name"
+        return
+    fi
+
+    pulled_module_name=$(
+        find_unique_pulled_pot_module_name "$pot_filename" "$pot_dir"
+    )
+    if [ -n "$pulled_module_name" ]; then
+        echo "$pulled_module_name"
         return
     fi
 

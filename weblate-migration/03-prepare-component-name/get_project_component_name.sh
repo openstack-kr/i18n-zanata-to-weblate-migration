@@ -62,7 +62,9 @@ function get_django_component_names {
     local dest_modulename
     local module_name_hyphenated
 
-    module_names=$(python3 $SCRIPTSDIR/03-prepare-component-name/get_modulename.py -p $PROJECT -t django -f setup.cfg)
+    module_names=$(python3 \
+        "$SCRIPTSDIR/03-prepare-component-name/get_modulename.py" \
+        -p "$PROJECT" -t django -f setup.cfg --pot-dir "$POT_DIR")
     
     # Convert array for proper counting
     # In Weblate, we can't use multiple components name in a project.
