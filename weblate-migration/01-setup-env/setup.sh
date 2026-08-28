@@ -18,7 +18,7 @@ WORK_DIR="$HOME/$WORKSPACE_NAME"
 function create_python_venv() {
     if ! command -v python3 &> /dev/null; then
         log_quiet "[ERROR] Python 3 is not installed"
-        FATAL_REASON="Python 3 미설치"
+        FATAL_REASON="Python 3 not installed"
         return 1
     fi
 
@@ -27,7 +27,7 @@ function create_python_venv() {
         run_tagged_quiet python3 -m venv "$WORK_DIR/.venv"
         if [ $? -ne 0 ]; then
             log_quiet "[ERROR] Failed to create virtual environment"
-            FATAL_REASON="virtualenv 생성 실패"
+            FATAL_REASON="Failed to create virtualenv"
             return 1
         fi
     fi
@@ -44,7 +44,7 @@ function install_dependencies() {
     run_tagged_quiet pip3 install -r requirements.txt
     if [ $? -ne 0 ]; then
         log_quiet "[ERROR] Failed to install requirements.txt in venv."
-        FATAL_REASON="pip install 실패 (requirements.txt)"
+        FATAL_REASON="pip install failed (requirements.txt)"
         return 1
     fi
 
@@ -55,7 +55,7 @@ function install_dependencies() {
         run_tagged_quiet sudo apt install -y $bindep_packages
         if [ $? -ne 0 ]; then
             log_quiet "[ERROR] Failed to install system dependencies with bindep"
-            FATAL_REASON="bindep 시스템 패키지 설치 실패"
+            FATAL_REASON="Failed to install bindep system packages"
             return 1
         fi
     fi
@@ -67,14 +67,14 @@ function check_zanata_cli() {
     # Check zanata-cli is installed
     if ! command -v zanata-cli &> /dev/null; then
         log_quiet "[ERROR] zanata-cli is not installed"
-        FATAL_REASON="zanata-cli 미설치"
+        FATAL_REASON="zanata-cli not installed"
         return 1
     fi
 
     # Check zanata.ini file exists
     if [ ! -f "$HOME/.config/zanata.ini" ]; then
         log_quiet "[ERROR] zanata.ini is not found"
-        FATAL_REASON="zanata.ini 파일 없음"
+        FATAL_REASON="zanata.ini file not found"
         return 1
     fi
     log_quiet "[INFO] zanata-cli is installed and zanata.ini file exists"
@@ -113,7 +113,7 @@ function prepare_workspace() {
     if [ ! -d "$WORK_DIR" ]; then
         if ! mkdir -p "$WORK_DIR"; then
             log_quiet "[ERROR] Failed to create $WORKSPACE_NAME directory"
-            FATAL_REASON="workspace 디렉터리 생성 실패"
+            FATAL_REASON="Failed to create workspace directory"
             return 1
         fi
     fi
@@ -122,7 +122,7 @@ function prepare_workspace() {
     if [ ! -d "$WORK_DIR/projects" ]; then
         if ! mkdir -p "$WORK_DIR/projects"; then
             log_quiet "[ERROR] Failed to create projects directory"
-            FATAL_REASON="projects 디렉터리 생성 실패"
+            FATAL_REASON="Failed to create projects directory"
             return 1
         fi
     fi

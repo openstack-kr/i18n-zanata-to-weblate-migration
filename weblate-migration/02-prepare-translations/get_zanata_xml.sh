@@ -26,7 +26,7 @@ function clone_project() {
         if [ -z "$(ls -A $CLONED_PROJECT_DIR)" ]; then
             rm -rf $CLONED_PROJECT_DIR
             log_quiet "[ERROR] Failed to clone $PROJECT project"
-            FATAL_REASON="git clone 실패 ($PROJECT)"
+            FATAL_REASON="git clone failed ($PROJECT)"
             return 1
         else
             log_quiet "[INFO] $PROJECT: Cloned successfully"
@@ -38,7 +38,7 @@ function clone_project() {
         cd $CLONED_PROJECT_DIR
         if ! run_tagged_quiet git checkout $BRANCH_NAME; then
             log_quiet "[ERROR] Failed to checkout $BRANCH_NAME version"
-            FATAL_REASON="git checkout 실패 ($BRANCH_NAME)"
+            FATAL_REASON="git checkout failed ($BRANCH_NAME)"
             return 1
         fi
         cd - > /dev/null

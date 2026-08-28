@@ -175,8 +175,8 @@ TREE_MARKER="##TREE## "
 QUIET_MARKER="##QUIET## "
 
 # A tree line that replaces the immediately preceding tree line on a
-# real terminal (e.g. "⏳ 환경설정 진행중..." -> "✓ 환경설정 완료" on
-# the same row, or a live "N/total done" counter updating locale by
+# real terminal (e.g. "⏳ Setting up environment..." -> "✓ Environment
+# setup complete" on the same row, or a live "N/total done" counter updating locale by
 # locale), instead of appending a new one - migration_projects.sh only
 # does this when its own stdout is a TTY (see colorize()'s IS_TTY,
 # same reasoning: an ANSI cursor-up/clear-line sequence is meaningless
@@ -213,7 +213,7 @@ function log_quiet() {
 # create_weblate_components.sh/test.sh's per-locale loops so a
 # component with many locales isn't silent for the many minutes it
 # can take (each locale is an API round-trip, sometimes with retry
-# sleeps) between its "⏳ 컴포넌트 생성 진행중..." header and the one
+# sleeps) between its "⏳ Creating components..." header and the one
 # tree line that used to appear only once every locale in it was
 # done. Callers print the first one via tree_line() (nothing to
 # update yet) and every one after via tree_line_update(); this
@@ -222,9 +222,9 @@ function component_progress_text() {
     local connector="$1" component="$2" done_count="$3" total="$4" failed_count="$5"
     local fail_note=""
     if [ "$failed_count" -gt 0 ]; then
-        fail_note=" (${failed_count}개 실패)"
+        fail_note=" (${failed_count} failed)"
     fi
-    printf '%s ⏳ %-28s %d/%d 진행중...%s' "$connector" "$component" "$done_count" "$total" "$fail_note"
+    printf '%s ⏳ %-28s %d/%d in progress...%s' "$connector" "$component" "$done_count" "$total" "$fail_note"
 }
 
 # component_progress_text() + tree_line_update() for the component
@@ -285,7 +285,7 @@ function run_tagged_quiet() {
     return "$exit_code"
 }
 
-# Map a failure line to a short, human-readable Korean category label
+# Map a failure line to a short, human-readable category label
 # (with any relevant numbers folded in) - see
 # ~/claude-docs/weblate-migration/failure-reason-categorization/plan.md
 # for the log-frequency evidence and design behind every entry here.
@@ -313,37 +313,37 @@ function categorize_failure_reason() {
 
     # --- Stage 04: Weblate REST API failures ---
     if [[ "$text" == *"Could not add '"* ]]; then
-        echo "번역 생성 거부됨"
+        echo "Translation creation rejected"
         return
     fi
     if [[ "$text" == *"Plural forms do not match the language."* ]]; then
-        echo "Plural-Forms 헤더 불일치"
+        echo "Plural-Forms header mismatch"
         return
     fi
     if [[ "$text" == *"duplicate key value violates unique constraint"* ]]; then
-        echo "중복 키 충돌"
+        echo "Duplicate key conflict"
         return
     fi
     if [[ "$text" == *'"code":"not_found"'* ]]; then
-        echo "찾을 수 없음(404)"
+        echo "Not found (404)"
         return
     fi
     if [[ "$text" == *"connection failed: connection to server at"* ]]; then
-        echo "DB 연결 실패"
+        echo "DB connection failed"
         return
     fi
     if [[ "$text" == *"Language with this language code was not found."* ]]; then
-        echo "언어 미등록"
+        echo "Language not registered"
         return
     fi
     if [[ "$text" == *"Server Error (500)"* ]]; then
-        echo "서버 오류(500)"
+        echo "Server error (500)"
         return
     fi
 
     # --- Stage 05: check_* accuracy-check failures ---
     if [[ "$text" == *"Component/locale does not exist"* ]]; then
-        echo "PO 파일 없음"
+        echo "PO file missing"
         return
     fi
     local fuzzy_n
@@ -352,14 +352,14 @@ function categorize_failure_reason() {
         local fuzzy_a fuzzy_b
         fuzzy_a=$(echo "$text" | grep -oP 'zanata=\K[0-9]+(?= -> weblate=)')
         fuzzy_b=$(echo "$text" | grep -oP -- '-> weblate=\K[0-9]+')
-        echo "미번역 증가 (${fuzzy_a}→${fuzzy_b}, +${fuzzy_n})"
+        echo "Untranslated count increased (${fuzzy_a}→${fuzzy_b}, +${fuzzy_n})"
         return
     fi
     if [[ "$text" == *"sentence count mismatch:"* ]]; then
         local count_a count_b
         count_a=$(echo "$text" | grep -oP '\K[0-9]+(?=\(zanata\))')
         count_b=$(echo "$text" | grep -oP '\K[0-9]+(?=\(weblate\))')
-        echo "문장 수 불일치 (${count_a}≠${count_b})"
+        echo "Sentence count mismatch (${count_a}≠${count_b})"
         return
     fi
     if [[ "$text" == *"Sentence detail check completed with issues:"* ]]; then
@@ -375,13 +375,13 @@ function categorize_failure_reason() {
         extra_n=$(echo "$text" | grep -oP 'extra=\K[0-9]+')
         local parts=()
         [ -n "$string_n" ] && [ "$string_n" != "0" ] &&
-            parts+=("번역문 불일치 ${string_n}건")
+            parts+=("translation mismatch: ${string_n}")
         [ -n "$plural_n" ] && [ "$plural_n" != "0" ] &&
-            parts+=("복수형 슬롯 불일치 ${plural_n}건")
+            parts+=("plural slot mismatch: ${plural_n}")
         [ -n "$missing_n" ] && [ "$missing_n" != "0" ] &&
-            parts+=("Weblate 누락 ${missing_n}건")
+            parts+=("Weblate missing: ${missing_n}")
         [ -n "$extra_n" ] && [ "$extra_n" != "0" ] &&
-            parts+=("Weblate 추가 ${extra_n}건")
+            parts+=("Weblate extra: ${extra_n}")
         # "${parts[*]}" under IFS=',' would join with "," alone - $*
         # expansion only ever uses IFS's *first character* as the
         # separator, so a multi-character IFS like ', ' silently
@@ -395,11 +395,11 @@ function categorize_failure_reason() {
     if [[ "$text" == *"Placeholder consistency check completed with issues:"* ]]; then
         local placeholder_n
         placeholder_n=$(echo "$text" | grep -oP 'mismatches=\K[0-9]+')
-        echo "플레이스홀더 불일치 (${placeholder_n}건)"
+        echo "Placeholder mismatch (${placeholder_n})"
         return
     fi
     if [[ "$text" == *"msgfmt:"* ]]; then
-        echo "PO 포맷 오류"
+        echo "PO format error"
         return
     fi
 }
@@ -434,7 +434,7 @@ function extract_status_reason() {
     attempts=$(echo "$text" | grep -oP 'failed after \K[0-9]+(?= attempts)')
     local retry_suffix=""
     if [ -n "$attempts" ]; then
-        retry_suffix=" (${attempts}회 재시도 후)"
+        retry_suffix=" (after ${attempts} retries)"
     fi
 
     local category
