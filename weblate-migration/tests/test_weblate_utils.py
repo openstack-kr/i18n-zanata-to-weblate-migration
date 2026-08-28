@@ -57,7 +57,8 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
             'readiness_checks': 0,
         }
 
-        def get_translation(url, headers=None, params=None):
+        def get_translation(url, headers=None, params=None,
+                            allow_redirects=None):
             if not state['created']:
                 return make_response(404, {'detail': 'Not found.'})
 
@@ -68,7 +69,8 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
             state['ready'] = True
             return make_response(200, {'total': 1260})
 
-        def create_translation(url, json=None, headers=None):
+        def create_translation(url, json=None, headers=None,
+                               allow_redirects=None):
             state['created'] = True
             return make_response(201, {})
 
@@ -98,14 +100,16 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
             'readiness_checks': 0,
         }
 
-        def get_translation(url, headers=None, params=None):
+        def get_translation(url, headers=None, params=None,
+                            allow_redirects=None):
             if not state['created']:
                 return make_response(404, {'detail': 'Not found.'})
 
             state['readiness_checks'] += 1
             return make_response(401, {'detail': 'Unauthorized.'})
 
-        def create_translation(url, json=None, headers=None):
+        def create_translation(url, json=None, headers=None,
+                               allow_redirects=None):
             state['created'] = True
             return make_response(201, {})
 
@@ -138,7 +142,8 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
             'ready': False,
         }
 
-        def get_translation(url, headers=None, params=None):
+        def get_translation(url, headers=None, params=None,
+                            allow_redirects=None):
             if not state['created']:
                 return make_response(404, {'detail': 'Not found.'})
 
@@ -162,7 +167,8 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
 
             self.fail(f'Unexpected GET: {url}')
 
-        def create_translation(url, json=None, headers=None):
+        def create_translation(url, json=None, headers=None,
+                               allow_redirects=None):
             state['created'] = True
             return make_response(201, {})
 
@@ -201,7 +207,8 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
             'ready': False,
         }
 
-        def get_translation(url, headers=None, params=None):
+        def get_translation(url, headers=None, params=None,
+                            allow_redirects=None):
             if not state['created']:
                 return make_response(404, {'detail': 'Not found.'})
 
@@ -232,7 +239,8 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
 
             self.fail(f'Unexpected GET: {url}')
 
-        def create_translation(url, json=None, headers=None):
+        def create_translation(url, json=None, headers=None,
+                               allow_redirects=None):
             state['created'] = True
             return make_response(201, {})
 
@@ -267,7 +275,8 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
             'source_checks': 0,
         }
 
-        def get_component(url, headers=None, params=None):
+        def get_component(url, headers=None, params=None,
+                          allow_redirects=None):
             if '/components/' in url:
                 return make_response(404, {'detail': 'Not found.'})
             if url.endswith('/projects/neutron/categories/'):
@@ -285,7 +294,8 @@ class WeblateUtilsReadinessTest(unittest.TestCase):
                 return make_response(200, {'total': 2})
             self.fail(f'Unexpected GET: {url}')
 
-        def create_component(url, data=None, files=None, headers=None):
+        def create_component(url, data=None, files=None, headers=None,
+                             allow_redirects=None):
             state['created'] = True
             return make_response(201, {})
 
@@ -373,6 +383,62 @@ class WeblateUtilsSentenceDetailTest(unittest.TestCase):
         )
 
         self.assertFalse(result)
+
+
+class WeblateUtilsRedirectTest(unittest.TestCase):
+    def setUp(self):
+        config = SimpleNamespace(
+            token='test-token',
+            base_url='http://weblate.example/',
+        )
+        self.utils = weblate_utils.WeblateUtils(config)
+
+    def test_get_rejects_redirect_instead_of_following_it(self):
+        # A 3xx here means WEBLATE_URL's scheme/host doesn't match the
+        # server's canonical one - following it would let requests
+        # silently resend the request against a different endpoint,
+        # so this must fail loudly instead of quietly returning
+        # whatever the followed response happens to be.
+        response = mock.Mock()
+        response.status_code = 301
+        response.headers = {
+            'Location': 'https://weblate.example/api/projects/',
+        }
+
+        with (
+            mock.patch.object(
+                weblate_utils.requests, 'get', return_value=response,
+            ) as mock_get,
+            self.assertRaises(SystemExit),
+        ):
+            self.utils._get('http://weblate.example/api/projects/')
+
+        self.assertFalse(mock_get.call_args.kwargs['allow_redirects'])
+
+    def test_post_rejects_redirect_instead_of_following_it(self):
+        # Following this redirect is what would otherwise turn a
+        # "create glossary" POST into a GET against the same URL
+        # (requests demotes POST to GET on 301/302) - the real bug
+        # this guard exists to catch.
+        response = mock.Mock()
+        response.status_code = 301
+        response.headers = {
+            'Location': ('https://weblate.example/api/projects/'
+                         'barbican/components/'),
+        }
+
+        with (
+            mock.patch.object(
+                weblate_utils.requests, 'post', return_value=response,
+            ) as mock_post,
+            self.assertRaises(SystemExit),
+        ):
+            self.utils._post(
+                'http://weblate.example/api/projects/barbican/components/',
+                data={'name': 'glossary'},
+            )
+
+        self.assertFalse(mock_post.call_args.kwargs['allow_redirects'])
 
 
 if __name__ == '__main__':
