@@ -108,15 +108,33 @@ def get_valid_modules(config, project, target):
     modules_files = get_option(config, 'files', 'packages', multiline=True)
 
     # pyproject.toml
-    modules_toml_options = get_option(config, 'options', 'packages')
+    modules_toml_options = get_option(
+        config, 'options', 'packages', multiline=True
+    )
     modules_toml_tool = get_option(
         config.get('tool', {}), 'setuptools', 'packages'
     )
+    # [tool.setuptools.packages] is only a flat module list (e.g.
+    # packages = ["foo"]) when declared directly. When packages are
+    # auto-discovered via [tool.setuptools.packages.find], TOML parses
+    # "packages" itself as a table (e.g. {"find": {"include": [...]}})
+    # rather than a list - modules_toml_tool_find below extracts that
+    # case separately, so a non-list value here must be ignored instead
+    # of being concatenated as-is.
+    if not isinstance(modules_toml_tool, list):
+        modules_toml_tool = []
     modules_toml_tool_find = get_option(
         config.get('tool', {}).get('setuptools', {}).get('packages', {}),
         'find',
         'include',
     )
+    # include entries are setuptools glob patterns (e.g. "designate*"
+    # to also match subpackages like designate.central), not literal
+    # module names - the importable top-level module is the pattern
+    # with the trailing wildcard stripped.
+    modules_toml_tool_find = [
+        name.rstrip('*') for name in modules_toml_tool_find
+    ]
 
     # get all modules
     modules = list(set(

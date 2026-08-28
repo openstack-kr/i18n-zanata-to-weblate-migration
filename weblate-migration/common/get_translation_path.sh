@@ -47,8 +47,19 @@ function get_project_package_name {
             # ex. freezer-web-ui -> freezer_ui
             project_package_name="freezer_ui"
             ;;
+        python-*)
+            # OpenStack client repos are named with a "python-" prefix
+            # that the importable module itself drops.
+            # ex. python-novaclient -> novaclient
+            project_package_name="${project#python-}"
+            project_package_name="${project_package_name//[-.]/_}"
+            ;;
         *)
-            project_package_name="${project//-/_}"
+            # oslo.cache -> oslo_cache, oslo.concurrency -> oslo_concurrency,
+            # etc. - matches how these projects' actual importable module
+            # name is derived (see get_modulename.py/PBR), which get_pot_path
+            # below relies on to locate each component's real pot directory.
+            project_package_name="${project//[-.]/_}"
     esac
     
     echo "$project_package_name"
@@ -227,7 +238,7 @@ function get_po_file_path() {
 function get_translation_path_list() {
     local component=$1
     local target_project_dir="$HOME/workspace/projects/$PROJECT/translations"
-    local project_package_name="${PROJECT//-/_}"
+    local project_package_name=$(get_project_package_name $PROJECT)
     
     if [[ "$component" == "releasenotes" ]]; then
         # Special handling for releasenotes

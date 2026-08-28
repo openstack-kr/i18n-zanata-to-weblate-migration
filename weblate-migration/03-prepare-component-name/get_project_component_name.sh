@@ -26,10 +26,24 @@ DOC_TARGETS=('contributor-guide'
 function get_python_component_names {
     local components=()
     local module_names
+    local python_module_names
 
     module_names=$(python3 $SCRIPTSDIR/03-prepare-component-name/get_modulename.py -p $PROJECT -t python -f setup.cfg)
+    python_module_names=($module_names)
 
     if [ -n "$module_names" ]; then
+        # Not every module has translatable content of its own (e.g.
+        # oslo.concurrency, oslo.cache: only releasenotes.pot exists,
+        # no <module>/locale/<module>.pot) - only add the module as a
+        # component when its pot file actually exists, matching the
+        # pattern already used below for releasenotes and in
+        # get_django_component_names/get_doc_component_names.
+        for modulename in "${python_module_names[@]}"; do
+            if [ -f "$POT_DIR/$modulename/locale/$modulename.pot" ]; then
+                components+=("$modulename")
+            fi
+        done
+
         if [ -f $PROJECT_DIR/releasenotes/source/conf.py ]; then
             components+=("releasenotes")
         fi
