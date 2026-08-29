@@ -1255,21 +1255,41 @@ class WeblateUtils:
         success count (the same reasoning create_weblate_components.sh
         already applies to a component with zero translation files).
 
+        A related but distinct case: a locale that a *previous* run
+        already fully uploaded. Re-uploading the same content makes
+        Weblate correctly report result=false with accepted=0 too -
+        there is nothing *new* to accept - but this time skipped
+        equals the file's translated-entry count and not_found is 0,
+        i.e. every translated string matched an existing unit and none
+        needed changing. That combination can only mean the content
+        already matches what's on Weblate (confirmed against a real
+        run: a locale failing this way had a byte-identical Weblate
+        translation already, from an earlier successful attempt at
+        this same migration), so it's treated as success rather than
+        retried - an identical retry would report the same thing every
+        time. This one prints its own message but still returns True
+        (unlike the empty-source case above): the translation is
+        genuinely, correctly present on Weblate, so counting it as a
+        real success is not misleading the way counting an empty
+        upload as one would be.
+
         :param project_name: The name of the project
         :param category_name: The name of the category
         :param component_name: The name of the component
         :param locale: The locale of the translation
         :param po_path: The path to the po file
-        :returns: True if a translation was actually uploaded, False
-            if po_path had no translated content and nothing was sent
+        :returns: True if the translation is present on Weblate
+            (either just uploaded, or already there from an earlier
+            run), False if po_path had no translated content and
+            nothing was sent
         """
 
         locale = sanitize_locale(locale)
         po = polib.pofile(po_path)
-        has_content = any(
-            entry.msgstr or any(entry.msgstr_plural.values())
-            for entry in po if not entry.obsolete)
-        if not has_content:
+        translated_count = sum(
+            1 for entry in po if not entry.obsolete
+            and (entry.msgstr or any(entry.msgstr_plural.values())))
+        if translated_count == 0:
             print("[INFO] No translation exists in source, skipping "
                   f"upload: {component_name} {locale}")
             return False
@@ -1280,6 +1300,13 @@ class WeblateUtils:
                 f'{locale}/file/')
         url = urljoin(self.base_url, path)
         print(f"[INFO] Uploading PO file: {po_path}")
+
+        def already_up_to_date(body: dict) -> bool:
+            return (
+                body.get('not_found') == 0
+                and body.get('accepted') == 0
+                and body.get('skipped') == translated_count)
+
         with open(po_path, 'rb') as f:
             def build_kwargs():
                 # _post()'s do_post rewinds every file-like value in
@@ -1291,14 +1318,23 @@ class WeblateUtils:
                     'data': {'method': 'translate', 'fuzzy': 'process'},
                 }
 
-            self._post_with_retry(
+            def upload_succeeded(r: requests.Response) -> bool:
+                if r.status_code != 200:
+                    return False
+                body = r.json()
+                return body['result'] is True or already_up_to_date(body)
+
+            response = self._post_with_retry(
                 url=url,
-                success=lambda r: (
-                    r.status_code == 200 and r.json()['result'] is True),
+                success=upload_succeeded,
                 build_kwargs=build_kwargs,
                 action='Upload',
             )
-        print("[INFO] Upload successful: ", component_name, locale)
+        if response.json()['result'] is True:
+            print("[INFO] Upload successful: ", component_name, locale)
+        else:
+            print("[INFO] Already up to date, nothing new to upload: ",
+                  component_name, locale)
         return True
 
     def download_translation_file(
