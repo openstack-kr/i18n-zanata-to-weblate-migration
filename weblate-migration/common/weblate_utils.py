@@ -1210,7 +1210,7 @@ class WeblateUtils:
         component_name: str,
         locale: str,
         po_path: str
-    ) -> None:
+    ) -> bool:
         """Upload a translation po file
 
         Uses Weblate's 'translate' upload method rather than
@@ -1234,14 +1234,46 @@ class WeblateUtils:
         this exact request, so an identical retry cannot help and
         those exit immediately instead of spending the retry budget).
 
+        If po_path has no translated content at all (every entry's
+        msgstr/msgstr_plural is empty - a locale Zanata never had any
+        translations for, as opposed to one that lost them), Weblate's
+        'translate' upload correctly finds nothing to accept and
+        replies 200 with result=false and accepted=0. That is not a
+        transient failure - retrying an unchanged empty file cannot
+        turn it into result=true - so it would otherwise burn the
+        full retry budget and get reported as a failed locale even
+        though there was never anything to migrate. Detected up front
+        and skipped without a request, rather than relying on
+        is_retryable_status to special-case it after the fact, since
+        that predicate is shared with other callers where a 200 is
+        always a real success/failure signal. The caller (main()) is
+        told about this via the return value, rather than this case
+        being indistinguishable from a real upload - see main()'s
+        exit-code mapping and create_weblate_components.sh's handling
+        of it, which reports it as its own "no translation in
+        source" tree leaf instead of silently folding it into the
+        success count (the same reasoning create_weblate_components.sh
+        already applies to a component with zero translation files).
+
         :param project_name: The name of the project
         :param category_name: The name of the category
         :param component_name: The name of the component
         :param locale: The locale of the translation
         :param po_path: The path to the po file
+        :returns: True if a translation was actually uploaded, False
+            if po_path had no translated content and nothing was sent
         """
 
         locale = sanitize_locale(locale)
+        po = polib.pofile(po_path)
+        has_content = any(
+            entry.msgstr or any(entry.msgstr_plural.values())
+            for entry in po if not entry.obsolete)
+        if not has_content:
+            print("[INFO] No translation exists in source, skipping "
+                  f"upload: {component_name} {locale}")
+            return False
+
         path = (f'translations/{sanitize_slug(project_name)}/'
                 f'{sanitize_slug(category_name)}%252F'
                 f'{sanitize_slug(component_name)}/'
@@ -1267,6 +1299,7 @@ class WeblateUtils:
                 action='Upload',
             )
         print("[INFO] Upload successful: ", component_name, locale)
+        return True
 
     def download_translation_file(
         self,
@@ -2342,9 +2375,16 @@ def main():
                 args.project, args.category, args.component, args.locale,
                 args.po_path)
         elif args.command == 'upload-po-file':
-            utils.upload_po_file(
+            uploaded = utils.upload_po_file(
                 args.project, args.category, args.component, args.locale,
                 args.po_path)
+            if not uploaded:
+                # Distinct from both success (0) and a real failure
+                # (1) - source had no translation at all, so
+                # create_weblate_components.sh can report it as its
+                # own "no translation in source" tree leaf instead of
+                # counting it as either.
+                sys.exit(2)
         elif args.command == 'download-translation-file':
             utils.download_translation_file(
                 args.project, args.po_path)
