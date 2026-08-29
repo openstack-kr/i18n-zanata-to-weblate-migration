@@ -238,8 +238,15 @@ function component_progress_text() {
 # keeping it a single no-argument helper instead of repeating the full
 # expression at each call site means a future change to what the
 # progress line shows only has one place to change.
+#
+# no_translation_locale_lines is only ever set by
+# create_weblate_components.sh's upload-po-file step (exit code 2 -
+# source had no translated content); test.sh has no such array, but
+# referencing an unset array's length is 0 in bash (no `set -u` in
+# this codebase), so it's safe to fold into done_count unconditionally
+# here rather than needing a second copy of this function.
 function update_component_progress() {
-    tree_line_update "$(component_progress_text "$component_connector" "$component" "$((success_count + ${#failed_locale_lines[@]}))" "$total_locales" "${#failed_locale_lines[@]}")"
+    tree_line_update "$(component_progress_text "$component_connector" "$component" "$((success_count + ${#failed_locale_lines[@]} + ${#no_translation_locale_lines[@]}))" "$total_locales" "${#failed_locale_lines[@]}")"
 }
 
 # Run $@ like run_tagged(), but marked quiet (see QUIET_MARKER above)

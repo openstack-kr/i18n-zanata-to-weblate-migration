@@ -106,6 +106,12 @@ function create_weblate_components {
         # added here, so they never appear as their own line (only
         # reflected in success_count/total_locales above).
         local failed_locale_lines=()
+        # Same idea, but for locales weblate_utils.py's upload-po-file
+        # exits 2 for (source po had no translated content at all -
+        # see its docstring) - not a failure, but also not a real
+        # upload, so it gets its own tree leaf category instead of
+        # blending into either success_count or failed_locale_lines.
+        local no_translation_locale_lines=()
 
         # First progress line is a new tree_line() (nothing to update
         # yet); every one after - on each locale's outcome below -
@@ -144,12 +150,24 @@ function create_weblate_components {
             fi
 
             log_quiet "[INFO] Uploading PO filse: $translation_path"
-            if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py upload-po-file \
+            # Not `if ! run_tagged_quiet ...; then`, deliberately - the
+            # `!` negation collapses run_tagged_quiet's real exit code
+            # down to 0/1 in `$?`, which would make exit code 2 (no
+            # translation in source, see weblate_utils.py's
+            # upload-po-file) indistinguishable from a real failure.
+            run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py upload-po-file \
                     --project $PROJECT \
                     --category $ZANATA_VERSION \
                     --component $component \
                     --locale $locale \
-                    --po-path $translation_path; then
+                    --po-path $translation_path
+            upload_exit=$?
+            if [ "$upload_exit" -eq 2 ]; then
+                no_translation_locale_lines+=("$(printf '%-8s%-20s%s' "$locale" "upload-po-file" "no translation in source")")
+                CURRENT_LOCALE="-"
+                update_component_progress
+                continue
+            elif [ "$upload_exit" -ne 0 ]; then
                 had_failure=1
                 failed_locale_lines+=("$(printf '%-8s%-20s%s' "$locale" "upload-po-file" "$(extract_status_reason "$LAST_TAGGED_LINE")")")
                 CURRENT_LOCALE="-"
@@ -190,14 +208,30 @@ function create_weblate_components {
         fi
 
         local failed_count=${#failed_locale_lines[@]}
+        local no_translation_count=${#no_translation_locale_lines[@]}
+        local leaf_total=$((failed_count + no_translation_count))
         local locale_index=0
         for entry in "${failed_locale_lines[@]}"; do
             locale_index=$((locale_index + 1))
             local locale_connector="├─"
-            if [ "$locale_index" -eq "$failed_count" ]; then
+            if [ "$locale_index" -eq "$leaf_total" ]; then
                 locale_connector="└─"
             fi
             tree_line "$(printf '%s%s ✗ %s' "$child_prefix" "$locale_connector" "$entry")"
+        done
+        # Neutral (uncolored - see migration_projects.sh's tree color
+        # dispatch, only ✗/⏳/✓ get colored) marker, not ✗: these
+        # locales didn't fail, they just had nothing to upload. Same
+        # reasoning as the "(no translation file)" whole-component case
+        # above - blending them into a row of real ✓/✗ outcomes would
+        # misrepresent what happened.
+        for entry in "${no_translation_locale_lines[@]}"; do
+            locale_index=$((locale_index + 1))
+            local locale_connector="├─"
+            if [ "$locale_index" -eq "$leaf_total" ]; then
+                locale_connector="└─"
+            fi
+            tree_line "$(printf '%s%s ○ %s' "$child_prefix" "$locale_connector" "$entry")"
         done
     done
     CURRENT_COMPONENT="-"
