@@ -107,6 +107,7 @@ function get_po_path {
     local locale=$2
     local base_dir=${3:-$HOME/workspace/projects/$PROJECT/translations}
     local is_weblate=${4:-false}
+    local project_package_name=$(get_project_package_name $PROJECT)
 
     # For Weblate, normalize locale code
     if [ "$is_weblate" == "true" ]; then
