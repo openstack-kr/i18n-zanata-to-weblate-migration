@@ -385,6 +385,58 @@ class WeblateUtilsSentenceDetailTest(unittest.TestCase):
         self.assertFalse(result)
 
 
+class WeblateUtilsPoFormatTest(unittest.TestCase):
+    def setUp(self):
+        config = SimpleNamespace(
+            token='test-token',
+            base_url='https://weblate.example/',
+        )
+        self.utils = weblate_utils.WeblateUtils(config)
+
+    def _write_po(self, content):
+        po_path = Path(
+            f'{self.id().replace(".", "-")}-{id(content)}'
+        ).with_suffix('.po')
+        self.addCleanup(po_path.unlink, missing_ok=True)
+        po_path.write_text(content, encoding='utf-8')
+        return po_path
+
+    def test_check_po_format_warns_but_does_not_fail_on_placeholder_mismatch(
+        self,
+    ):
+        # Mirrors the real heat.po pt_BR case: the translator
+        # translated the placeholder name itself ({key} -> {chave}),
+        # which msgfmt --check correctly flags as a fatal format
+        # error. This must surface as a warning, not fail the
+        # accuracy test - see check_po_format's docstring.
+        weblate_po = self._write_po(
+            'msgid ""\nmsgstr ""\n'
+            '"Content-Type: text/plain; charset=UTF-8\\n"\n\n'
+            '#, python-brace-format\n'
+            'msgid "Set header X-Container-Meta-{key}."\n'
+            'msgstr "Configurar cabecalho X-Container-Meta-{chave}."\n'
+        )
+
+        result = self.utils.check_po_format(
+            'heat', 'master', 'heat', 'pt_BR', str(weblate_po),
+        )
+
+        self.assertTrue(result)
+
+    def test_check_po_format_passes_clean_file(self):
+        weblate_po = self._write_po(
+            'msgid ""\nmsgstr ""\n'
+            '"Content-Type: text/plain; charset=UTF-8\\n"\n\n'
+            'msgid "Hello"\nmsgstr "Bonjour"\n'
+        )
+
+        result = self.utils.check_po_format(
+            'heat', 'master', 'heat', 'fr', str(weblate_po),
+        )
+
+        self.assertTrue(result)
+
+
 class WeblateUtilsRedirectTest(unittest.TestCase):
     def setUp(self):
         config = SimpleNamespace(

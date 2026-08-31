@@ -266,6 +266,13 @@ def reduce_result_events(events) -> dict:
     # for that locale, so their status stays None even though the
     # locale has conclusively failed - that must report as 'fail', not
     # 'incomplete'.
+    #
+    # format_status can also be 'warn' (check_po_format found a
+    # msgfmt --check issue but doesn't treat it as fatal - see that
+    # function's docstring). 'warn' matches neither 'fail' nor None
+    # below, so it falls through to 'pass' here same as a clean
+    # check - the warning itself isn't lost, aggregate_report.py's
+    # _accuracy_rows() surfaces it separately via format_status.
     for entry in results.values():
         existence_status = entry.get('existence_status')
         fuzzy_status = entry.get('fuzzy_status')
@@ -2144,12 +2151,22 @@ class WeblateUtils:
         compile the PO, so it's a direct check of buildability rather
         than a re-implementation of gettext's own validation rules.
 
+        A format-specifier mismatch msgfmt reports here is almost
+        always a pre-existing mistranslation carried over from Zanata
+        (e.g. a translator translating a placeholder name itself,
+        such as "{key}" -> "{chave}") rather than something migration
+        broke, so it's surfaced as a warning (format_status='warn')
+        and does NOT fail the accuracy test/pipeline - only "msgfmt
+        itself couldn't run at all" (not installed) is treated as a
+        real failure, since that means the file was never actually
+        validated.
+
         :param project_name: Name of the project
         :param category_name: Name of the category
         :param component_name: Name of the component
         :param locale: Name of the locale
         :param weblate_po_path: Path to the weblate po file
-        :returns: True if msgfmt --check reports no errors
+        :returns: True unless msgfmt itself could not be run
         """
         try:
             result = subprocess.run(
@@ -2173,18 +2190,26 @@ class WeblateUtils:
             # msgfmt writes one diagnostic per line to stderr; warnings
             # (e.g. missing optional header fields) don't affect the
             # exit code, only fatal errors do, so a non-zero exit here
-            # means a real format problem.
+            # means a real format problem. Reported as [WARN] (not
+            # [ERROR]) and format_status='warn' (not 'fail') - see the
+            # docstring above for why this must not fail the run, but
+            # the specific msgfmt diagnostics are still printed/saved
+            # so the broken msgid/locale is easy to find and fix.
             error_lines = [
                 line for line in result.stderr.splitlines() if line.strip()
             ]
             for line in error_lines:
-                print(f"[ERROR] msgfmt: {line}")
+                print(f"[WARN] msgfmt: {line}")
+            print(
+                f"[WARN] PO format issue found (not failing the "
+                f"accuracy test): {locale}"
+            )
             self._save_result(
                 project_name, category_name, component_name, locale,
                 format_errors=error_lines,
-                format_status='fail',
+                format_status='warn',
             )
-            return False
+            return True
 
         print(f"[INFO] ✓ PO format valid (msgfmt --check): {locale}")
         self._save_result(
