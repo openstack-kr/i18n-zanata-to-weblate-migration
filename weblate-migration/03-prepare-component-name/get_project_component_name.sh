@@ -13,6 +13,8 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+source $SCRIPTSDIR/common/get_translation_path.sh
+
 PROJECT_DIR=$HOME/$WORKSPACE_NAME/projects/$PROJECT/$PROJECT
 POT_DIR=$HOME/$WORKSPACE_NAME/projects/$PROJECT/pot
 
@@ -83,7 +85,17 @@ function get_django_component_names {
         # Check if the project has multiple Django modules
         # If it has, we set name <module_name>-django/djangojs
         for modulename in ${django_module_names[@]}; do
-            if [ -f "$POT_DIR/$modulename/locale/django.pot" ]; then
+            # For single-module projects, also accept a legacy package
+            # name whose pot file exists (see
+            # get_project_legacy_package_names) - a Zanata document
+            # registered under the project's pre-rename name (e.g.
+            # freezer-web-ui's old disaster_recovery) won't ever show up
+            # under the current module name, but is_multiple==false
+            # means there's only one Django component ("django")
+            # either way, so the legacy pot still identifies it.
+            if [ -f "$POT_DIR/$modulename/locale/django.pot" ] || \
+               { [ "$is_multiple" == "false" ] && \
+                 [ -n "$(find_legacy_pot_module_name django.pot $POT_DIR)" ]; }; then
                 dest_modulename="django"
                 if [ "$is_multiple" == "true" ]; then
                     # The module name basically use _ as separator.
@@ -95,7 +107,9 @@ function get_django_component_names {
                 components+=("$dest_modulename")
             fi
 
-            if [ -f "$POT_DIR/$modulename/locale/djangojs.pot" ]; then
+            if [ -f "$POT_DIR/$modulename/locale/djangojs.pot" ] || \
+               { [ "$is_multiple" == "false" ] && \
+                 [ -n "$(find_legacy_pot_module_name djangojs.pot $POT_DIR)" ]; }; then
                 dest_modulename="djangojs"
                 if [ "$is_multiple" == "true" ]; then
                     module_name_hyphenated=$(echo "$modulename" | sed 's/_/-/g')
