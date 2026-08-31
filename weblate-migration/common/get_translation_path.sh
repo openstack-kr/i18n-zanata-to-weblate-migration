@@ -65,6 +65,74 @@ function get_project_package_name {
     echo "$project_package_name"
 }
 
+function get_project_legacy_package_names {
+    local project=$1
+
+    case $project in
+        "freezer-web-ui")
+            # freezer-web-ui's Django module was named disaster_recovery
+            # before it was renamed in commit 50b6486 (2024-12-09). Zanata
+            # document IDs don't get renamed when the module is renamed in
+            # git, so branches whose translations were last exported to
+            # Zanata before that rename (e.g. stable/2025.1) still have
+            # their documents registered under disaster_recovery.
+            echo "disaster_recovery"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# Find, among a project's known legacy package names, one whose pot file
+# actually exists under $pot_dir - used to fall back to the pre-rename
+# Zanata document path when the current package name's pot file isn't
+# there (see get_project_legacy_package_names above).
+#
+# :param pot_filename: e.g. "django.pot", "djangojs.pot", "<component>.pot"
+# :param pot_dir: directory pot files were pulled into for this run
+# Echoes the matching legacy name and returns 0, or returns 1 if none
+# of the project's legacy names have that pot file.
+function find_legacy_pot_module_name {
+    local pot_filename=$1
+    local pot_dir=$2
+    local legacy_name
+
+    for legacy_name in $(get_project_legacy_package_names $PROJECT); do
+        if [ -f "$pot_dir/$legacy_name/locale/$pot_filename" ]; then
+            echo "$legacy_name"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Resolve which on-disk package directory actually holds a component's
+# pot file: the current package name if its pot file exists, otherwise
+# the first legacy name whose pot file exists (see
+# find_legacy_pot_module_name), otherwise the current package name
+# unchanged (so callers keep reporting "no translation file" exactly as
+# before when neither exists).
+function resolve_project_package_name {
+    local pot_filename=$1
+    local pot_dir=${2:-$HOME/$WORKSPACE_NAME/projects/$PROJECT/pot}
+    local project_package_name=$(get_project_package_name $PROJECT)
+    local legacy_name
+
+    if [ -f "$pot_dir/$project_package_name/locale/$pot_filename" ]; then
+        echo "$project_package_name"
+        return
+    fi
+
+    legacy_name=$(find_legacy_pot_module_name "$pot_filename" "$pot_dir")
+    if [ -n "$legacy_name" ]; then
+        echo "$legacy_name"
+        return
+    fi
+
+    echo "$project_package_name"
+}
+
 function get_pot_path {
     local component=$1
     local base_dir=${2:-$HOME/$WORKSPACE_NAME/projects/$PROJECT/pot}
@@ -88,16 +156,16 @@ function get_pot_path {
             echo "$base_dir/$module_name/locale/djangojs.pot"
             ;;
         "django")
-            echo "$base_dir/$project_package_name/locale/django.pot"
+            echo "$base_dir/$(resolve_project_package_name django.pot $base_dir)/locale/django.pot"
             ;;
         "djangojs")
-            echo "$base_dir/$project_package_name/locale/djangojs.pot"
+            echo "$base_dir/$(resolve_project_package_name djangojs.pot $base_dir)/locale/djangojs.pot"
             ;;
         "doc"|doc-*)
             echo "$base_dir/doc/source/locale/$component.pot"
             ;;
         *)
-            echo "$base_dir/$project_package_name/locale/$component.pot"
+            echo "$base_dir/$(resolve_project_package_name $component.pot $base_dir)/locale/$component.pot"
             ;;
     esac
 }
@@ -142,14 +210,14 @@ function get_po_path {
             if [ "$is_weblate" == "true" ]; then
                 echo "$base_dir/django/locale/$locale/LC_MESSAGES/django.po"
             else
-                echo "$base_dir/$project_package_name/locale/$locale/LC_MESSAGES/django.po"
+                echo "$base_dir/$(resolve_project_package_name django.pot)/locale/$locale/LC_MESSAGES/django.po"
             fi
             ;;
         "djangojs")
             if [ "$is_weblate" == "true" ]; then
                 echo "$base_dir/djangojs/locale/$locale/LC_MESSAGES/djangojs.po"
             else
-                echo "$base_dir/$project_package_name/locale/$locale/LC_MESSAGES/djangojs.po"
+                echo "$base_dir/$(resolve_project_package_name djangojs.pot)/locale/$locale/LC_MESSAGES/djangojs.po"
             fi
             ;;
         "doc"|doc-*)
@@ -160,7 +228,7 @@ function get_po_path {
             fi
             ;;
         *)
-            echo "$base_dir/$project_package_name/locale/$locale/LC_MESSAGES/$component.po"
+            echo "$base_dir/$(resolve_project_package_name $component.pot)/locale/$locale/LC_MESSAGES/$component.po"
             ;;
     esac
 }
@@ -246,9 +314,11 @@ function get_translation_path_list() {
         locale_list=($(find ${target_project_dir}/releasenotes -name "*.po" -path "*/locale/*/LC_MESSAGES/*.po" 2>/dev/null || echo ""))
     
     elif [[ "$component" == "django" ]]; then
-        locale_list=($(find ${target_project_dir}/${project_package_name} -name "*.po" -path "*/locale/*/LC_MESSAGES/django.po" 2>/dev/null || echo ""))
+        local resolved_package_name=$(resolve_project_package_name django.pot)
+        locale_list=($(find ${target_project_dir}/${resolved_package_name} -name "*.po" -path "*/locale/*/LC_MESSAGES/django.po" 2>/dev/null || echo ""))
     elif [[ "$component" == "djangojs" ]]; then
-        locale_list=($(find ${target_project_dir}/${project_package_name} -name "*.po" -path "*/locale/*/LC_MESSAGES/djangojs.po" 2>/dev/null || echo ""))
+        local resolved_package_name=$(resolve_project_package_name djangojs.pot)
+        locale_list=($(find ${target_project_dir}/${resolved_package_name} -name "*.po" -path "*/locale/*/LC_MESSAGES/djangojs.po" 2>/dev/null || echo ""))
     elif [[ "$component" == *"-django" || "$component" == *"-djangojs" ]]; then
         # Django components are saved as django.pot, djangojs.pot
         sanitized_component=$(sanitize_django_component $component)

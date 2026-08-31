@@ -198,8 +198,13 @@ endstage
 log_quiet "[INFO] Clean up workspace directory"
 # Not remove the project repository for reuse.
 # TODO: Create code for cleanup all projects.
-rm -rf $HOME/$WORKSPACE_NAME/projects/pot
-rm -rf $HOME/$WORKSPACE_NAME/projects/translations
+# pot/translations live under projects/$PROJECT/, not directly under
+# projects/ - without $PROJECT here, these deleted a path that never
+# existed, so pot/po files from earlier versions/branches of the same
+# project silently carried over into the next run's component
+# discovery and uploads.
+rm -rf $HOME/$WORKSPACE_NAME/projects/$PROJECT/pot
+rm -rf $HOME/$WORKSPACE_NAME/projects/$PROJECT/translations
 
 if [ "$component_migration_failed" -eq 1 ] || [ "$accuracy_test_failed" -eq 1 ]; then
     exit 1
