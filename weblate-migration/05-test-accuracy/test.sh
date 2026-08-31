@@ -54,6 +54,17 @@ function test_accuracy {
         # once the loop below finishes - mirrors
         # create_weblate_components.sh's failed_locale_lines.
         local failed_locale_lines=()
+        # Locales where check-po-format found a msgfmt --check issue
+        # but, per check_po_format()'s docstring (common/weblate_utils.py),
+        # that's reported as a warning rather than a failure - it
+        # still exits 0 and counts toward success_count below, so
+        # without this it would be entirely invisible in the live
+        # console tree (QUIET_MARKER lines like its [WARN] output
+        # never reach migration_projects.sh's console - see
+        # pretty-printer.sh). Same idea as create_weblate_components.sh's
+        # no_translation_locale_lines: a real outcome that's neither a
+        # plain success nor a failure gets its own tree leaf category.
+        local warned_locale_lines=()
 
         # See create_weblate_components.sh's identical progress-line
         # pair for why this is a fresh tree_line() only the first time
@@ -190,6 +201,18 @@ function test_accuracy {
                 continue
             fi
 
+            # check-po-format exits 0 here even when it found a
+            # (non-fatal-to-the-pipeline) msgfmt --check issue - its
+            # last printed line in that case is always "[WARN] PO
+            # format issue found ...", which run_tagged_quiet falls
+            # back to as LAST_TAGGED_LINE (no "[ERROR] ... (<code>)"
+            # summary line to prefer instead), so this check is
+            # reliable without needing check-po-format's exit code to
+            # change.
+            if [[ "$LAST_TAGGED_LINE" == *"PO format issue found"* ]]; then
+                warned_locale_lines+=("$(printf '%-8s%-24s%s' "$locale" "po-format" "msgfmt --check warning (not fatal, see logs)")")
+            fi
+
             success_count=$((success_count + 1))
             CURRENT_LOCALE="-"
             update_component_progress
@@ -210,14 +233,30 @@ function test_accuracy {
         fi
 
         local failed_count=${#failed_locale_lines[@]}
+        local warned_count=${#warned_locale_lines[@]}
+        local leaf_total=$((failed_count + warned_count))
         local locale_index=0
         for entry in "${failed_locale_lines[@]}"; do
             locale_index=$((locale_index + 1))
             local locale_connector="├─"
-            if [ "$locale_index" -eq "$failed_count" ]; then
+            if [ "$locale_index" -eq "$leaf_total" ]; then
                 locale_connector="└─"
             fi
             tree_line "$(printf '%s%s ✗ %s' "$child_prefix" "$locale_connector" "$entry")"
+        done
+        # Neutral (uncolored - migration_projects.sh's tree color
+        # dispatch only colors lines containing ✗/⏳/✓) marker, not ✗:
+        # these locales passed (they count toward success_count above)
+        # but msgfmt --check found something worth a human looking at.
+        # Same reasoning as create_weblate_components.sh's "○
+        # no translation in source" leaves.
+        for entry in "${warned_locale_lines[@]}"; do
+            locale_index=$((locale_index + 1))
+            local locale_connector="├─"
+            if [ "$locale_index" -eq "$leaf_total" ]; then
+                locale_connector="└─"
+            fi
+            tree_line "$(printf '%s%s ⚠ %s' "$child_prefix" "$locale_connector" "$entry")"
         done
         CURRENT_COMPONENT="-"
     done
