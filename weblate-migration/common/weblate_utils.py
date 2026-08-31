@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 import traceback
-from typing import Callable
+from typing import Callable, Optional
 from urllib.parse import urlencode, urljoin
 import zipfile
 import polib
@@ -560,6 +560,7 @@ class WeblateUtils:
         action: str,
         retry_count: int = 3,
         sleep_time: int = 15,
+        verify_success: Optional[Callable[[], bool]] = None,
     ) -> requests.Response:
         """Shared retry loop for a status-code-based transient failure
 
@@ -567,7 +568,8 @@ class WeblateUtils:
         `success` but its status is retryable (see
         is_retryable_status - 5xx, 423 repository-locked, 429 rate
         limited, or any non-4xx that still didn't count as success).
-        A genuine 4xx rejection, or exhausting all retries, exits the
+        A genuine 4xx rejection, or exhausting all retries (with no
+        `verify_success`, or one that comes back False), exits the
         process - callers rely on this instead of checking a return
         value. Shared by _post_with_retry (the create/upload POSTs)
         and _get_with_retry (the existence-check GETs in
@@ -583,7 +585,22 @@ class WeblateUtils:
             should be treated as successful
         :param action: short label for this operation, used in log
             and error messages (e.g. "Create component")
-        :returns: the successful response
+        :param verify_success: optional no-arg callable, checked only
+            once all retries are exhausted with a retryable status
+            (never for a genuine 4xx rejection, which exits
+            immediately above). A retryable status like 504 means a
+            gateway/proxy in front of Weblate gave up waiting on a
+            response - it does not mean Weblate itself rejected or
+            failed to finish the request, which may have kept being
+            processed after the gateway stopped waiting. This lets a
+            caller independently confirm, e.g. by re-fetching the
+            resource, whether the operation actually landed despite
+            never getting back a response `success` recognized.
+            Returning True is treated as success (see
+            upload_po_file's verify_already_uploaded for the
+            motivating case).
+        :returns: the successful (or, with verify_success, the
+            independently-confirmed) response
         """
         assert retry_count >= 1, "retry_count must allow at least one attempt"
         for cnt in range(retry_count):
@@ -606,6 +623,12 @@ class WeblateUtils:
                   f"{response.text}")
             time.sleep(sleep_time)
 
+        if verify_success is not None and verify_success():
+            print(f"[INFO] {action} response lost after {retry_count} "
+                  f"attempts ({response.status_code}), but independently "
+                  "confirmed it landed - treating as success")
+            return response
+
         print(f"[ERROR] {action} failed after {retry_count} attempts "
               f"({response.status_code}): {response.text}")
         sys.exit(1)
@@ -618,10 +641,12 @@ class WeblateUtils:
         action: str,
         retry_count: int = 3,
         sleep_time: int = 15,
+        verify_success: Optional[Callable[[], bool]] = None,
     ) -> requests.Response:
         """POST with retry for transient failures
 
-        See _retry_on_status for the retry/status-code semantics.
+        See _retry_on_status for the retry/status-code and
+        verify_success semantics.
 
         :param url: request URL
         :param success: predicate(response) -> True if this attempt
@@ -641,6 +666,7 @@ class WeblateUtils:
             action=action,
             retry_count=retry_count,
             sleep_time=sleep_time,
+            verify_success=verify_success,
         )
 
     def _get_with_retry(
@@ -1233,6 +1259,14 @@ class WeblateUtils:
         is_retryable_status - most 4xx codes mean the server rejected
         this exact request, so an identical retry cannot help and
         those exit immediately instead of spending the retry budget).
+        If all retries are exhausted on a retryable status (e.g. a
+        504 from a gateway/proxy in front of Weblate that gave up
+        waiting on a response), that alone doesn't prove Weblate
+        never finished the upload - it may have kept processing past
+        the gateway's timeout. verify_already_uploaded re-fetches the
+        translation directly before giving up, so an upload that
+        actually landed isn't reported as a failure just because its
+        response got lost in transit.
 
         If po_path has no translated content at all (every entry's
         msgstr/msgstr_plural is empty - a locale Zanata never had any
@@ -1307,6 +1341,24 @@ class WeblateUtils:
                 and body.get('accepted') == 0
                 and body.get('skipped') == translated_count)
 
+        def verify_already_uploaded() -> bool:
+            # Called only once retries are exhausted on a retryable
+            # status (e.g. 504) - see _retry_on_status's
+            # verify_success param. A gateway/proxy timing out on
+            # Weblate's response doesn't mean Weblate never finished
+            # processing the upload, so re-fetch what Weblate
+            # actually has for this translation directly (same `url`,
+            # GET instead of POST) before concluding this attempt
+            # really failed.
+            check_response = self._get(url)
+            if check_response.status_code != 200:
+                return False
+            weblate_po = polib.pofile(check_response.text)
+            weblate_translated_count = sum(
+                1 for entry in weblate_po if not entry.obsolete
+                and (entry.msgstr or any(entry.msgstr_plural.values())))
+            return weblate_translated_count >= translated_count
+
         with open(po_path, 'rb') as f:
             def build_kwargs():
                 # _post()'s do_post rewinds every file-like value in
@@ -1329,8 +1381,16 @@ class WeblateUtils:
                 success=upload_succeeded,
                 build_kwargs=build_kwargs,
                 action='Upload',
+                verify_success=verify_already_uploaded,
             )
-        if response.json()['result'] is True:
+        if not upload_succeeded(response):
+            # verify_already_uploaded confirmed this landed even
+            # though `response` itself is the last failed attempt
+            # (e.g. a 504 with no usable JSON body) - see
+            # _retry_on_status's verify_success param.
+            print("[INFO] Upload response was lost, but Weblate already "
+                  "has this translation: ", component_name, locale)
+        elif response.json()['result'] is True:
             print("[INFO] Upload successful: ", component_name, locale)
         else:
             print("[INFO] Already up to date, nothing new to upload: ",
