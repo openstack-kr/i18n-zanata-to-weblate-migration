@@ -69,6 +69,17 @@ STAGE_LABELS[UNKNOWN_STAGE] = 'Unknown (check log)'
 # must not be reported under the same accuracy-mismatch stage label.
 ACCURACY_INCOMPLETE_LABEL = 'Accuracy check incomplete'
 
+# check_po_format (common/weblate_utils.py) reports a msgfmt --check
+# failure as format_status='warn', not 'fail' - it's almost always a
+# pre-existing Zanata mistranslation, not something migration broke,
+# so it must not count as an accuracy failure (see that function's
+# docstring). reduce_result_events() already folds 'warn' into an
+# overall 'pass' status for that reason. Without this label, that
+# warning would be entirely invisible in this report (stage='-', same
+# as a clean pass) even though it's exactly the kind of thing this
+# report exists to surface without opening the raw log by hand.
+PO_FORMAT_WARNING_LABEL = 'PO format warning (not a failure - see logs)'
+
 
 def classify_stage(project_log_path, project, version):
     """Return the stage key reached last for `version` in the log.
@@ -209,7 +220,10 @@ def _accuracy_rows(project, version, entries):
     for entry in sorted(entries, key=_entry_sort_key):
         status = entry.get('status', 'unknown')
         if status == 'pass':
-            stage = '-'
+            stage = (
+                PO_FORMAT_WARNING_LABEL
+                if entry.get('format_status') == 'warn' else '-'
+            )
         elif status == 'fail':
             stage = STAGE_LABELS['accuracy']
         else:
