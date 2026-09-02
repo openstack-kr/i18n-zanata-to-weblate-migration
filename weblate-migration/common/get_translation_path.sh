@@ -133,12 +133,25 @@ function resolve_project_package_name {
     echo "$project_package_name"
 }
 
+# Manuals-family projects (api-site, security-doc, openstack-manuals)
+# run every book through setup_manuals() (see get_zanata_xml.sh),
+# which - unlike a typical Python package's flat
+# <package>/locale/<component>.pot layout - writes one pot per book
+# under doc/<book>/source/locale/<book>.pot. Detected by checking the
+# canonical Zanata pot directory directly (not any base_dir a caller
+# passed in), since get_po_path's only caller passes a different
+# base_dir for the downloaded Weblate copy.
+function is_manuals_book_component {
+    local component=$1
+    [ -f "$HOME/$WORKSPACE_NAME/projects/$PROJECT/pot/doc/$component/source/locale/$component.pot" ]
+}
+
 function get_pot_path {
     local component=$1
     local base_dir=${2:-$HOME/$WORKSPACE_NAME/projects/$PROJECT/pot}
     local module_name=""
     local project_package_name=$(get_project_package_name $PROJECT)
-    
+
     case $component in
         "releasenotes")
             echo "$base_dir/releasenotes/source/locale/releasenotes.pot"
@@ -165,7 +178,11 @@ function get_pot_path {
             echo "$base_dir/doc/source/locale/$component.pot"
             ;;
         *)
-            echo "$base_dir/$(resolve_project_package_name $component.pot $base_dir)/locale/$component.pot"
+            if is_manuals_book_component "$component"; then
+                echo "$base_dir/doc/$component/source/locale/$component.pot"
+            else
+                echo "$base_dir/$(resolve_project_package_name $component.pot $base_dir)/locale/$component.pot"
+            fi
             ;;
     esac
 }
@@ -228,7 +245,20 @@ function get_po_path {
             fi
             ;;
         *)
-            echo "$base_dir/$(resolve_project_package_name $component.pot)/locale/$locale/LC_MESSAGES/$component.po"
+            if is_manuals_book_component "$component"; then
+                if [ "$is_weblate" == "true" ]; then
+                    # Weblate's downloaded zip lays each manuals-book
+                    # component out as <component>/locale/<locale>/
+                    # LC_MESSAGES/<component>.po - no "source" segment
+                    # (unlike the "doc"/doc-* single-pot case above,
+                    # whose filemask is rooted at doc/source/locale).
+                    echo "$base_dir/$component/locale/$locale/LC_MESSAGES/$component.po"
+                else
+                    echo "$base_dir/doc/$component/source/locale/$locale/LC_MESSAGES/$component.po"
+                fi
+            else
+                echo "$base_dir/$(resolve_project_package_name $component.pot)/locale/$locale/LC_MESSAGES/$component.po"
+            fi
             ;;
     esac
 }
