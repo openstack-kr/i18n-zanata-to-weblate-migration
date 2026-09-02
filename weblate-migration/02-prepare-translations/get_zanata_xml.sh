@@ -84,11 +84,22 @@ function setup_manuals {
     declare -A SPECIAL_BOOKS
     source doc-tools-check-languages.conf
 
-    # All manuals projects (api-site, openstack-manuals, security-doc)
-    # keep every book directly under doc/, both on disk and as
-    # recorded by Zanata.
-    DocFolder=doc
-    ZanataDocFolder=doc
+    # Most manuals projects (api-site, openstack-manuals) keep every
+    # book directly under doc/, both on disk and as recorded by
+    # Zanata. security-doc is the exception: its books (security-guide,
+    # security-notes, ...) live directly at the repository root, with
+    # no doc/ directory at all. Detect which layout this clone
+    # actually has instead of assuming doc/ - ZanataDocFolder is left
+    # empty (not ".") for the root case since it feeds directly into
+    # the "**/<ZanataDocFolder>/<DOCNAME>/..." rule pattern below,
+    # where a literal "./" segment would not match zanata-cli's glob.
+    if [ -d doc ]; then
+        DocFolder=doc
+        ZanataDocFolder=doc
+    else
+        DocFolder=.
+        ZanataDocFolder=
+    fi
 
     # Grab all of the rules for the documents we care about
     ZANATA_RULES=
@@ -134,11 +145,11 @@ function setup_manuals {
             # it silently falls back to gettext's default trans-file
             # layout ({path}/{locale_with_underscore}.po - no
             # LC_MESSAGES, no filename) instead of the layout below.
-            ZANATA_RULES="$ZANATA_RULES -r **/${ZanataDocFolder}/${DOCNAME}/source/locale/${DOCNAME}.pot \
+            ZANATA_RULES="$ZANATA_RULES -r **/${ZanataDocFolder:+$ZanataDocFolder/}${DOCNAME}/source/locale/${DOCNAME}.pot \
                 ${DocFolder}/${DOCNAME}/source/locale/{locale_with_underscore}/LC_MESSAGES/${DOCNAME}.po"
         else
             if [ -f ${DocFolder}/${DOCNAME}/locale/${DOCNAME}.pot ]; then
-                ZANATA_RULES="$ZANATA_RULES -r **/${ZanataDocFolder}/${DOCNAME}/locale/${DOCNAME}.pot \
+                ZANATA_RULES="$ZANATA_RULES -r **/${ZanataDocFolder:+$ZanataDocFolder/}${DOCNAME}/locale/${DOCNAME}.pot \
                     ${DocFolder}/${DOCNAME}/locale/{locale_with_underscore}.po"
             fi
         fi
