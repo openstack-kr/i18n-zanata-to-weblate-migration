@@ -73,9 +73,22 @@ function setup_project {
 # Setup project manuals projects (api-site, openstack-manuals,
 # security-guide) for Zanata
 function setup_manuals {
+    # doc-tools-check-languages.conf lives at the root of the cloned
+    # project and is sourced by relative path below, so CWD must be
+    # $CLONED_PROJECT_DIR here - clone_project() does not leave us
+    # there (it cd's back to the caller's original directory when it
+    # finishes).
+    cd "$CLONED_PROJECT_DIR"
+
     # Fill in associative array SPECIAL_BOOKS
     declare -A SPECIAL_BOOKS
     source doc-tools-check-languages.conf
+
+    # All manuals projects (api-site, openstack-manuals, security-doc)
+    # keep every book directly under doc/, both on disk and as
+    # recorded by Zanata.
+    DocFolder=doc
+    ZanataDocFolder=doc
 
     # Grab all of the rules for the documents we care about
     ZANATA_RULES=
@@ -112,11 +125,20 @@ function setup_manuals {
             esac
         fi
         if [ ${IS_RST} -eq 1 ] ; then
-            ZANATA_RULES="$ZANATA_RULES -r ${ZanataDocFolder}/${DOCNAME}/source/locale/${DOCNAME}.pot \
+            # The pattern (this rule's first field) must start with **/
+            # so it still matches once pull_translation_files overrides
+            # --src-dir to an absolute path: zanata-cli's translation
+            # file resolver glob-matches this pattern against
+            # <--src-dir>/<document id>, and a plain relative pattern
+            # never matches an absolute path (wrong segment count), so
+            # it silently falls back to gettext's default trans-file
+            # layout ({path}/{locale_with_underscore}.po - no
+            # LC_MESSAGES, no filename) instead of the layout below.
+            ZANATA_RULES="$ZANATA_RULES -r **/${ZanataDocFolder}/${DOCNAME}/source/locale/${DOCNAME}.pot \
                 ${DocFolder}/${DOCNAME}/source/locale/{locale_with_underscore}/LC_MESSAGES/${DOCNAME}.po"
         else
             if [ -f ${DocFolder}/${DOCNAME}/locale/${DOCNAME}.pot ]; then
-                ZANATA_RULES="$ZANATA_RULES -r ${ZanataDocFolder}/${DOCNAME}/locale/${DOCNAME}.pot \
+                ZANATA_RULES="$ZANATA_RULES -r **/${ZanataDocFolder}/${DOCNAME}/locale/${DOCNAME}.pot \
                     ${DocFolder}/${DOCNAME}/locale/{locale_with_underscore}.po"
             fi
         fi
@@ -124,7 +146,7 @@ function setup_manuals {
 
     # Project setup and updating POT files for release notes.
     if [[ $PROJECT == "openstack-manuals" ]] && [[ $ZANATA_VERSION == "master" ]]; then
-        ZANATA_RULES="$ZANATA_RULES -r ./releasenotes/source/locale/releasenotes.pot \
+        ZANATA_RULES="$ZANATA_RULES -r **/releasenotes/source/locale/releasenotes.pot \
             releasenotes/source/locale/{locale_with_underscore}/LC_MESSAGES/releasenotes.po"
     fi
 
@@ -136,6 +158,7 @@ function setup_manuals {
         exit 1
     fi
     log_quiet "[INFO] zanata.xml created successfully for $PROJECT"
+    cd - > /dev/null
 }
 
 # Setup a training-guides project for Zanata

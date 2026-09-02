@@ -113,7 +113,15 @@ case $PROJECT in
     openstack-manuals)
         setup_manuals
         pull_translation_files
-        COMPONENTS+=("doc")
+        # Per-book components, matching doc-tools-check-languages.conf's
+        # SPECIAL_BOOKS (RST books under doc/) plus releasenotes, which
+        # setup_manuals() always adds separately for this project.
+        COMPONENTS+=("api-quick-start")
+        COMPONENTS+=("common")
+        COMPONENTS+=("glossary")
+        COMPONENTS+=("image-guide")
+        COMPONENTS+=("install-guide")
+        COMPONENTS+=("releasenotes")
         ;;
     i18n)
         setup_i18n
