@@ -137,13 +137,26 @@ function resolve_project_package_name {
 # run every book through setup_manuals() (see get_zanata_xml.sh),
 # which - unlike a typical Python package's flat
 # <package>/locale/<component>.pot layout - writes one pot per book
-# under doc/<book>/source/locale/<book>.pot. Detected by checking the
-# canonical Zanata pot directory directly (not any base_dir a caller
-# passed in), since get_po_path's only caller passes a different
-# base_dir for the downloaded Weblate copy.
-function is_manuals_book_component {
+# under <book>/source/locale/<book>.pot. Most of these projects nest
+# that under doc/ (setup_manuals()'s DocFolder), but security-doc has
+# no doc/ directory and keeps books at the repository root, so both
+# prefixes have to be checked. Detected by checking the canonical
+# Zanata pot directory directly (not any base_dir a caller passed in),
+# since get_po_path's only caller passes a different base_dir for the
+# downloaded Weblate copy. Echoes the prefix that was actually found
+# ("doc/" or "") and fails if the component isn't a manuals book at
+# all.
+function get_manuals_doc_prefix {
     local component=$1
-    [ -f "$HOME/$WORKSPACE_NAME/projects/$PROJECT/pot/doc/$component/source/locale/$component.pot" ]
+    local pot_dir="$HOME/$WORKSPACE_NAME/projects/$PROJECT/pot"
+
+    if [ -f "$pot_dir/doc/$component/source/locale/$component.pot" ]; then
+        echo "doc/"
+    elif [ -f "$pot_dir/$component/source/locale/$component.pot" ]; then
+        echo ""
+    else
+        return 1
+    fi
 }
 
 function get_pot_path {
@@ -178,8 +191,9 @@ function get_pot_path {
             echo "$base_dir/doc/source/locale/$component.pot"
             ;;
         *)
-            if is_manuals_book_component "$component"; then
-                echo "$base_dir/doc/$component/source/locale/$component.pot"
+            local doc_prefix
+            if doc_prefix=$(get_manuals_doc_prefix "$component"); then
+                echo "$base_dir/${doc_prefix}$component/source/locale/$component.pot"
             else
                 echo "$base_dir/$(resolve_project_package_name $component.pot $base_dir)/locale/$component.pot"
             fi
@@ -245,7 +259,8 @@ function get_po_path {
             fi
             ;;
         *)
-            if is_manuals_book_component "$component"; then
+            local doc_prefix
+            if doc_prefix=$(get_manuals_doc_prefix "$component"); then
                 if [ "$is_weblate" == "true" ]; then
                     # Weblate's downloaded zip lays each manuals-book
                     # component out as <component>/locale/<locale>/
@@ -254,7 +269,7 @@ function get_po_path {
                     # whose filemask is rooted at doc/source/locale).
                     echo "$base_dir/$component/locale/$locale/LC_MESSAGES/$component.po"
                 else
-                    echo "$base_dir/doc/$component/source/locale/$locale/LC_MESSAGES/$component.po"
+                    echo "$base_dir/${doc_prefix}$component/source/locale/$locale/LC_MESSAGES/$component.po"
                 fi
             else
                 echo "$base_dir/$(resolve_project_package_name $component.pot)/locale/$locale/LC_MESSAGES/$component.po"
