@@ -188,7 +188,22 @@ function get_pot_path {
             echo "$base_dir/$(resolve_project_package_name djangojs.pot $base_dir)/locale/djangojs.pot"
             ;;
         "doc"|doc-*)
-            echo "$base_dir/doc/source/locale/$component.pot"
+            if [ "$PROJECT" == "training-guides" ]; then
+                # setup_training_guides() (get_zanata_xml.sh) scopes
+                # --srcdir directly to doc/upstream-training/source/locale,
+                # the only location of this project's single Zanata
+                # document ("upstream-training" - see
+                # tools/buildlang.sh's DOCNAME). zanata-cli writes a
+                # document's source file at <src-dir>/<document id>.pot,
+                # and this document id has no "/" in it, so the pulled
+                # pot ends up flat at the pot dir root instead of
+                # nested under doc/source/locale/ like other
+                # "doc"-component projects. Verified with a read-only
+                # `zanata-cli pull --pull-type source`.
+                echo "$base_dir/upstream-training.pot"
+            else
+                echo "$base_dir/doc/source/locale/$component.pot"
+            fi
             ;;
         *)
             local doc_prefix
@@ -304,8 +319,15 @@ function get_module_name_from_component {
 
 function extract_locale_from_path {
     local translation_path=$1
-    
-    echo "$translation_path" | sed 's|.*/locale/\([^/]*\)/LC_MESSAGES/.*|\1|'
+
+    # The locale code is always the directory immediately above
+    # LC_MESSAGES, with or without a further "locale/" ancestor - most
+    # components nest under .../locale/<code>/LC_MESSAGES/..., but
+    # training-guides pulls flat as .../<code>/LC_MESSAGES/... (see
+    # get_pot_path's training-guides case). Not requiring the literal
+    # "locale/" segment covers both without changing the result for
+    # the nested layout.
+    echo "$translation_path" | sed 's|.*/\([^/]*\)/LC_MESSAGES/.*|\1|'
 }
 
 function get_po_file_path() {
@@ -370,6 +392,12 @@ function get_translation_path_list() {
         # Get the correct module name for this component
         correct_module_name=$(get_module_name_from_component $component)
         locale_list=($(find ${target_project_dir}/${correct_module_name} -name "*.po" -path "*/locale/*/LC_MESSAGES/${sanitized_component}.po" 2>/dev/null || echo ""))
+    elif [[ "$PROJECT" == "training-guides" ]]; then
+        # Matches get_pot_path's training-guides case: the single
+        # "doc" component's po files are pulled flat as
+        # translations/<locale>/LC_MESSAGES/upstream-training.po, with
+        # no locale/ ancestor directory and not named doc.po.
+        locale_list=($(find ${target_project_dir} -name "*.po" -path "*/LC_MESSAGES/upstream-training.po" 2>/dev/null || echo ""))
     else
         locale_list=($(find ${target_project_dir} -name "*.po" -path "*/locale/*/LC_MESSAGES/${component}.po" 2>/dev/null || echo ""))
     fi
