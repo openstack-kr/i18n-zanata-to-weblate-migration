@@ -42,6 +42,11 @@ function get_project_package_name {
             # ex. designate-dashboard -> designatedashboard
             project_package_name="designatedashboard"
             ;;
+        "cloudkitty-dashboard")
+            # Remove all dashes
+            # ex. cloudkitty-dashboard -> cloudkittydashboard
+            project_package_name="cloudkittydashboard"
+            ;;
         "freezer-web-ui")
             # Remove all dashes
             # ex. freezer-web-ui -> freezer_ui
