@@ -18,10 +18,19 @@ WORK_DIR="$HOME/$WORKSPACE_NAME"
 function pull_translation_files {
     cd $WORK_DIR/projects/$PROJECT/$PROJECT
 
+    # zanata-cli's launcher passes JAVA_OPTS directly to Java. Force UTF-8
+    # last so a host's missing/invalid locale (or an earlier file.encoding
+    # option) cannot make the gettext translation writer replace multibyte
+    # msgids with question marks. Preserve unrelated caller options such as
+    # heap sizing.
+    local zanata_java_opts="${JAVA_OPTS:+$JAVA_OPTS }-Dfile.encoding=UTF-8"
+
     # Pull all translation files(po, pot) from Zanata.
     # source file(*.pot) is in /pot directory.
     # translation file(*.po) is in /translations directory.
-    run_tagged_quiet zanata-cli -B -e pull --pull-type both \
+    run_tagged_quiet env LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+        JAVA_OPTS="$zanata_java_opts" \
+        zanata-cli -B -e pull --pull-type both \
         --src-dir $WORK_DIR/projects/$PROJECT/pot \
         --trans-dir $WORK_DIR/projects/$PROJECT/translations
 }

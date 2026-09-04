@@ -206,6 +206,17 @@ function get_pot_path {
                 # "doc"-component projects. Verified with a read-only
                 # `zanata-cli pull --pull-type source`.
                 echo "$base_dir/upstream-training.pot"
+            elif [[ "$PROJECT" == "i18n" && "$component" == "doc" ]]; then
+                # setup_i18n() scopes the source directory to
+                # doc/source/locale. Zanata therefore pulls this document
+                # flat as pot/doc.pot rather than preserving that prefix.
+                # Return failure when it is absent so component creation
+                # cannot turn a missing pull into a later FileNotFoundError.
+                local i18n_pot_path="$base_dir/doc.pot"
+                if [ ! -f "$i18n_pot_path" ]; then
+                    return 1
+                fi
+                echo "$i18n_pot_path"
             else
                 echo "$base_dir/doc/source/locale/$component.pot"
             fi
@@ -380,11 +391,18 @@ function get_translation_path_list() {
     local component=$1
     local target_project_dir="$HOME/workspace/projects/$PROJECT/translations"
     local project_package_name=$(get_project_package_name $PROJECT)
-    
+
     if [[ "$component" == "releasenotes" ]]; then
         # Special handling for releasenotes
         locale_list=($(find ${target_project_dir}/releasenotes -name "*.po" -path "*/locale/*/LC_MESSAGES/*.po" 2>/dev/null || echo ""))
-    
+    elif [[ "$PROJECT" == "i18n" && "$component" == "doc" ]]; then
+        # With i18n, zanata.xml's source root is doc/source/locale while the
+        # CLI is invoked with a separate --trans-dir. Zanata consequently
+        # writes <locale>/LC_MESSAGES/doc.po directly below translations/.
+        # Restrict this fallback to i18n/doc so conventional projects keep
+        # using their existing */locale/* layout.
+        locale_list=($(find "$target_project_dir" -mindepth 3 -maxdepth 3 \
+            -type f -path "*/LC_MESSAGES/doc.po" 2>/dev/null | sort))
     elif [[ "$component" == "django" ]]; then
         local resolved_package_name=$(resolve_project_package_name django.pot)
         locale_list=($(find ${target_project_dir}/${resolved_package_name} -name "*.po" -path "*/locale/*/LC_MESSAGES/django.po" 2>/dev/null || echo ""))
