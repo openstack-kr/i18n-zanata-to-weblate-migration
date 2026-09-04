@@ -33,8 +33,13 @@ source $SCRIPTSDIR/04-prepare-weblate-components/create_weblate_components.sh
 source $SCRIPTSDIR/05-test-accuracy/test.sh
 source $SCRIPTSDIR/common/pretty-printer.sh
 
-# We need a UTF-8 locale, set it properly in case it's not set.
-export LANG=en_US.UTF-8
+# We need a UTF-8 locale for Zanata's Java client and the PO-processing
+# helpers. Ubuntu installations do not necessarily generate en_US.UTF-8;
+# when that locale is missing, Java 8 silently falls back to ASCII and
+# replaces each non-ASCII byte in translated PO msgstr values with "?".
+# C.UTF-8 is provided by glibc without requiring a generated language locale.
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
 
 # All opendev.org projects this script clones are public - a git clone
 # should never legitimately need credentials. Without this, a typo'd
@@ -84,6 +89,16 @@ fi
 endstage
 tree_line_update "✓ Clone complete"
 
+# Every project setup below pulls from Zanata before component discovery.
+# Do not let a failed pull fall through to a misleading "POT generation
+# complete" message and a later FileNotFoundError during component creation.
+function pull_translation_files_or_exit {
+    if ! pull_translation_files; then
+        tagged_colorize "$RED" "[ERROR] Failed to export translations from Zanata"
+        exit 1
+    fi
+}
+
 # NOTE: POT generation (setup_*, which writes zanata.xml) and the Zanata
 # export (pull_translation_files) are kept in a single stage here rather
 # than split into two, because get_django_component_names/
@@ -100,19 +115,19 @@ tree_line "⏳ Generating POT..."
 case $PROJECT in
     api-site)
         setup_manuals
-        pull_translation_files
+        pull_translation_files_or_exit
         COMPONENTS+=("api-quick-start")
         COMPONENTS+=("firstapp")
         ;;
     
     security-doc)
         setup_manuals
-        pull_translation_files
+        pull_translation_files_or_exit
         COMPONENTS+=("security-guide")
         ;;
     openstack-manuals)
         setup_manuals
-        pull_translation_files
+        pull_translation_files_or_exit
         # Per-book components, matching doc-tools-check-languages.conf's
         # SPECIAL_BOOKS (RST books under doc/) plus releasenotes, which
         # setup_manuals() always adds separately for this project.
@@ -125,22 +140,22 @@ case $PROJECT in
         ;;
     i18n)
         setup_i18n
-        pull_translation_files
+        pull_translation_files_or_exit
         COMPONENTS+=("doc")
         ;;
     training-guides)
         setup_training_guides
-        pull_translation_files
+        pull_translation_files_or_exit
         COMPONENTS+=("doc")
         ;;
     tripleo-ui)
         setup_reactjs_project
-        pull_translation_files
+        pull_translation_files_or_exit
         COMPONENTS+=("i18n")
         ;;
     *)
         setup_project
-        pull_translation_files
+        pull_translation_files_or_exit
         
         COMPONENTS+=($(get_python_component_names))
         COMPONENTS+=($(get_django_component_names))

@@ -81,7 +81,13 @@ function create_weblate_components {
             child_prefix="   "
         fi
 
-        pot_path=$(get_pot_path $component)
+        if ! pot_path=$(get_pot_path "$component"); then
+            had_failure=1
+            log_quiet "[ERROR] Could not resolve a unique pulled POT file for component: $component"
+            tree_line "$(printf '%s ✗ %-28s (POT path resolution failed)' "$component_connector" "$component")"
+            tree_line "$(printf '%s└─ ✗ %s' "$child_prefix" "$(printf '%-8s%-20s%s' "-" "resolve-pot-path" "expected one matching POT file")")"
+            continue
+        fi
 
         if ! run_tagged_quiet python3 -u $SCRIPTSDIR/common/weblate_utils.py create-component \
                 --project $PROJECT \
@@ -99,6 +105,19 @@ function create_weblate_components {
         for translation_path in $translation_path_list; do
             total_locales=$((total_locales + 1))
         done
+
+        # i18n/master is expected to contain translated doc PO files. An
+        # empty result here means the pulled layout was not recognized (the
+        # failure mode that previously produced a misleading project-level
+        # SUCCESS), so make it an explicit migration failure. Other projects
+        # may legitimately have components with no translated PO files.
+        if [[ "$PROJECT" == "i18n" && "$component" == "doc" && "$total_locales" -eq 0 ]]; then
+            had_failure=1
+            tree_line "$(printf '%s ✗ %-28s (pulled translation files not found)' "$component_connector" "$component")"
+            tree_line "$(printf '%s└─ ✗ %s' "$child_prefix" "$(printf '%-8s%-20s%s' "-" "find-translations" "expected translations/<locale>/LC_MESSAGES/doc.po")")"
+            continue
+        fi
+
         local success_count=0
         # One rendered "<locale>  <operation>  <status reason>" entry
         # per failed locale, printed as this component's tree children
