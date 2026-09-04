@@ -36,8 +36,8 @@ source $SCRIPTSDIR/common/pretty-printer.sh
 # We need a UTF-8 locale for Zanata's Java client and the PO-processing
 # helpers. Ubuntu installations do not necessarily generate en_US.UTF-8;
 # when that locale is missing, Java 8 silently falls back to ASCII and
-# replaces each non-ASCII byte in translated PO msgids with "?". C.UTF-8 is
-# provided by glibc without requiring a generated language locale.
+# replaces each non-ASCII byte in translated PO msgstr values with "?".
+# C.UTF-8 is provided by glibc without requiring a generated language locale.
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 

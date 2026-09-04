@@ -21,8 +21,8 @@ function pull_translation_files {
     # zanata-cli's launcher passes JAVA_OPTS directly to Java. Force UTF-8
     # last so a host's missing/invalid locale (or an earlier file.encoding
     # option) cannot make the gettext translation writer replace multibyte
-    # msgids with question marks. Preserve unrelated caller options such as
-    # heap sizing.
+    # msgstr values with question marks. Preserve unrelated caller options
+    # such as heap sizing.
     local zanata_java_opts="${JAVA_OPTS:+$JAVA_OPTS }-Dfile.encoding=UTF-8"
 
     # Pull all translation files(po, pot) from Zanata.
